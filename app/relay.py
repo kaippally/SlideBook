@@ -1,0 +1,39 @@
+"""Job progress back to StudioMate's Telegram bot, for links it sent here (SLIDEBOOK_PLAN.md §11.1).
+
+A job carries `options.notify = {chatId, messageId}`; every change of its step is POSTed to the bot's
+event server, which edits that one message. The bot being down costs nothing but the update."""
+import logging
+import os
+
+import aiohttp
+
+log = logging.getLogger('slidebook')
+
+BOT_EVENT_URL = os.environ.get('STUDIOMATE_BOT_EVENT_URL', 'http://127.0.0.1:5001/event')
+_last = {}
+
+
+async def on_broadcast(msg):
+    if msg.get('type') != 'job':
+        return
+    job = msg['job']
+    notify = (job.get('options') or {}).get('notify')
+    if not notify:
+        return
+    key = (job['status'], job['step'])
+    if _last.get(job['id']) == key:
+        return
+    _last[job['id']] = key
+    event = {'type': 'slidebook-job', 'chatId': notify.get('chatId'), 'messageId': notify.get('messageId'),
+             'jobId': job['id'], 'status': job['status'], 'step': job['step'], 'error': job.get('error') or '',
+             'url': job['url'], 'bookId': job.get('book_id')}
+    if job['status'] == 'done' and job.get('book_id'):
+        import db
+        b = db.get_book(job['book_id'])
+        if b:
+            event.update(title=b['title'], pages=b['pageCount'])
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as s:
+            await s.post(BOT_EVENT_URL, json=event)
+    except Exception as e:
+        log.info('bot event not delivered: %s', e)
