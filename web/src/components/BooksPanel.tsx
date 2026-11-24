@@ -4,6 +4,7 @@ import { api, useJobs } from '../lib/api';
 import { CardFace } from './CardFace';
 import { DEFAULT_CARD_STYLE } from '../lib/cardStyle';
 import { Dialog, attempt, notify } from './Dialog';
+import { AskDialog, ReanalyseDialog } from './RecordDialogs';
 import type { BookSummary, Job } from '../lib/types';
 
 const PREF = 'slidebook:library';
@@ -66,14 +67,15 @@ export function BooksPanel({ books, viewId, liveId, stances, activeStance, onOpe
   const [rename, setRename] = useState<BookSummary | null>(null);
   const [regroup, setRegroup] = useState<BookSummary | null>(null);
   const [del, setDel] = useState<BookSummary | null>(null);
+  const [claude, setClaude] = useState<{ mode: 'reanalyse' | 'ask'; recordId: number } | null>(null);
   const [text, setText] = useState('');
   const listMode = prefs.size <= MIN;
 
   const analyse = async () => {
     const u = url.trim();
     if (!u) return;
-    const r = await attempt(api('/api/analyse', { method: 'POST', json: { url: u, bookId: into === 'open' ? viewId : null, stanceId: stance, kind, examine: kind === 'single' ? ['claims', 'fallacies'] : ALL_EXAMINE } }), 'Analyse');
-    if (r) { setUrl(''); notify('Queued for analysis'); }
+    const r = await attempt(api<{ existing?: { warning: string } }>('/api/analyse', { method: 'POST', json: { url: u, bookId: into === 'open' ? viewId : null, stanceId: stance, kind, examine: kind === 'single' ? ['claims', 'fallacies'] : ALL_EXAMINE } }), 'Analyse');
+    if (r) { setUrl(''); notify(r.existing ? r.existing.warning : 'Queued for analysis'); }
   };
 
   const shown = useMemo(() => {
@@ -96,6 +98,10 @@ export function BooksPanel({ books, viewId, liveId, stances, activeStance, onOpe
     const ring = live ? 'border-emerald-500 ring-1 ring-emerald-500/60' : open ? 'border-sky-500' : 'border-slate-800 hover:border-slate-600';
     const actions = (
       <div className="absolute top-1 right-1 hidden group-hover:flex gap-0.5">
+        {b.recordId && <>
+          <button onClick={e => { e.stopPropagation(); setClaude({ mode: 'reanalyse', recordId: b.recordId! }); }} className="w-5 h-5 rounded bg-black/75 text-[10px]" title="Re-analyse with Claude (from the saved record)">🔁</button>
+          <button onClick={e => { e.stopPropagation(); setClaude({ mode: 'ask', recordId: b.recordId! }); }} className="w-5 h-5 rounded bg-black/75 text-[10px]" title="Ask Claude about this video">❓</button>
+        </>}
         <button onClick={e => { e.stopPropagation(); setText(b.title); setRename(b); }} className="w-5 h-5 rounded bg-black/75 text-[10px]" title="Rename">✎</button>
         <button onClick={e => { e.stopPropagation(); setText(b.group); setRegroup(b); }} className="w-5 h-5 rounded bg-black/75 text-[10px]" title="Group">▤</button>
         <button onClick={e => { e.stopPropagation(); setDel(b); }} className="w-5 h-5 rounded bg-black/75 text-[11px] text-rose-400" title="Delete">×</button>
@@ -208,6 +214,8 @@ export function BooksPanel({ books, viewId, liveId, stances, activeStance, onOpe
           <datalist id="groups">{[...new Set(books.map(b => b.group).filter(Boolean))].map(g => <option key={g} value={g} />)}</datalist>
         </Dialog>
       )}
+      {claude?.mode === 'reanalyse' && <ReanalyseDialog recordId={claude.recordId} onClose={() => setClaude(null)} />}
+      {claude?.mode === 'ask' && <AskDialog recordId={claude.recordId} onClose={() => setClaude(null)} />}
       {del && (
         <Dialog title="Delete book?" danger acceptLabel="Delete" onClose={() => setDel(null)} onAccept={async () => { await attempt(api(`/api/books/${del.id}`, { method: 'DELETE' }), 'Delete'); setDel(null); }}>
           <p><b className="text-slate-100">{del.title}</b> — {del.pageCount} pages{del.id === liveId ? ', currently ON AIR' : ''}. This cannot be undone.</p>

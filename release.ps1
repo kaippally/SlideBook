@@ -1,6 +1,9 @@
 #Requires -Version 7
 # Packages the built SlideBook.exe into release\SlideBook-<version>.zip (portable) and
 # release\SlideBook-<version>-Setup.exe (self-extracting, runs Setup-SlideBook). Build first: pwsh -File build.ps1
+# -Publish also tags v<version> and creates the GitHub release that installed copies update from. Its notes
+# are every commit since the previous release, which is the change list the app shows when it updates.
+param([switch]$Publish)
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 
@@ -20,6 +23,8 @@ New-Item -ItemType Directory -Force $stage, $sfx | Out-Null
 Copy-Item SlideBook.exe, README.md, Setup-SlideBook.ps1, Setup-SlideBook.cmd $stage
 Copy-Item fonts, obs $stage -Recurse
 if (Test-Path tools) { Copy-Item tools $stage -Recurse }
+if (Test-Path SlideBookVideos.exe) { Copy-Item SlideBookVideos.exe $stage }
+Copy-Item sfx $stage -Recurse
 
 $zip = Join-Path $rel "SlideBook-$version.zip"
 Remove-Item $zip -ErrorAction SilentlyContinue
@@ -61,7 +66,7 @@ AdminQuietInstCmd=%AdminQuietInstCmd%
 UserQuietInstCmd=%UserQuietInstCmd%
 SourceFiles=SourceFiles
 [Strings]
-InstallPrompt=
+InstallPrompt=SlideBook is built by Nishad Kaippally (KaippsCafe@gmail.com) and given away free, so content creators are never charged for making shorts. Install SlideBook $version?
 DisplayLicense=
 FinishMessage=
 TargetName=$exe
@@ -88,3 +93,18 @@ Remove-Item $stage, $sfx -Recurse -Force
 "SlideBook $version"
 "  installer: $exe"
 "  portable:  $zip"
+
+if ($Publish) {
+  $tag = "v$version"
+  if (git tag --list $tag) { throw "$tag already exists. Bump VERSION in app/desktop.py first." }
+  if (git status --porcelain) { throw 'Commit your changes first: the release notes are built from the commits.' }
+  $prev = git describe --tags --abbrev=0 2>$null
+  $range = if ($prev) { "$prev..HEAD" } else { 'HEAD' }
+  $notes = Join-Path $rel "notes-$version.md"
+  $lines = git log $range --no-merges --reverse --pretty=format:'- %s'
+  @("Changes since $(if ($prev) { $prev } else { 'the first build' }):", '') + $lines | Set-Content $notes -Encoding utf8
+  git tag $tag
+  git push origin $tag
+  gh release create $tag $zip $exe --title "SlideBook $version" --notes-file $notes
+  "  published: https://github.com/kaippally/SlideBook/releases/tag/$tag"
+}

@@ -1,0 +1,225 @@
+"""Claude does the thinking: analysis and questions, always from a video's text record (never the video).
+
+It runs through the Claude Code CLI in print mode (`claude -p`) on the operator's own subscription login,
+so there is no API key here; `CLAUDE_CLI_PATH` overrides where the CLI is found. Gemini stays the ears
+(transcription); everything that reasons about what was said comes through this module."""
+import json, logging, os, subprocess
+from pathlib import Path
+
+import db
+from paths import DATA
+
+log = logging.getLogger('slidebook.reasoning')
+
+ANALYSE_MODEL = 'opus'
+ASK_MODEL = 'sonnet'
+
+DEFAULT_HOUSE_RULES = '''You analyse recorded talks, debates and interviews for a channel that makes the strongest honest case for scientific rationalism against faith in supernatural gods.
+
+Standard of evidence
+- Assess every claim by publicly checkable evidence. Scripture, tradition, clerical authority, personal revelation and religious experience are claims to be examined, never evidence for the claim being made.
+- Prefer the scientific consensus and primary research (peer-reviewed journals, systematic reviews, established reference works) over news, blogs or advocacy sites.
+- The burden of proof lies with the person asserting the supernatural claim. Say so when a speaker shifts it.
+
+How to argue
+- Name each apologetic or rhetorical move by its standard name where one applies: unfalsifiable reframing, argument from authority, argument from ignorance / god of the gaps, shifting the burden of proof, special pleading, equivocation, quote-mining, appeal to consequences, moving the goalposts.
+- Steelman before you rebut: state the speaker's point in its strongest form, then show where it fails.
+- Where a speaker — on either side — is right, say so plainly. Credibility comes from fairness; never overstate the case against an opponent.
+- Distinguish what is false from what is unproven or unfalsifiable.
+
+Style
+- Short, concrete, quotable sentences that would land on a card read in a few seconds.
+- No sneering or insults toward people; the target is the argument.
+- Cite the moment: refer to the timestamp and speaker of every point you make.'''
+
+
+def house_rules():
+    return db.get_setting('houseRules') or DEFAULT_HOUSE_RULES
+
+
+class ClaudeError(Exception):
+    pass
+
+
+def cli_path():
+    if os.environ.get('CLAUDE_CLI_PATH'):
+        return os.environ['CLAUDE_CLI_PATH']
+    exts = Path.home() / '.vscode' / 'extensions'
+    found = sorted(exts.glob('anthropic.claude-code-*/resources/native-binary/claude.exe'), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not found:
+        raise ClaudeError('Claude Code is not installed (no claude.exe under the VS Code extensions). Set CLAUDE_CLI_PATH.')
+    return str(found[0])
+
+
+def run(system, prompt, model, schema=None, effort=None, timeout=900):
+    """One headless Claude turn: no tools, no project settings, no saved session. Returns
+    {text, data, usage, cost, model}; `data` is the parsed structured output when a schema is given."""
+    work = DATA / 'claude'
+    work.mkdir(parents=True, exist_ok=True)
+    sys_file = work / 'system.txt'
+    sys_file.write_text(system, encoding='utf-8')
+    args = [cli_path(), '-p', '--output-format', 'json', '--model', model, '--tools', '', '--setting-sources', '',
+            '--no-session-persistence', '--system-prompt-file', str(sys_file)]
+    if schema:
+        args += ['--json-schema', json.dumps(schema)]
+    if effort:
+        args += ['--effort', effort]
+    # The subscription login, never a key that would bill per token instead.
+    env = {k: v for k, v in os.environ.items() if k not in ('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN')}
+    try:
+        p = subprocess.run(args, input=prompt, capture_output=True, text=True, encoding='utf-8', cwd=work, env=env,
+                           timeout=timeout, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    except subprocess.TimeoutExpired:
+        raise ClaudeError(f'Claude did not answer within {timeout // 60} minutes.')
+    try:
+        out = json.loads(p.stdout)
+    except ValueError:
+        raise ClaudeError(f'Claude CLI failed: {(p.stderr or p.stdout or "no output").strip()[:400]}')
+    if out.get('is_error'):
+        raise ClaudeError(f'Claude: {str(out.get("result") or out.get("subtype"))[:400]}')
+    data = out.get('structured_output')
+    if schema and not isinstance(data, dict):
+        raise ClaudeError('Claude returned no structured answer.')
+    usage = out.get('usage') or {}
+    return {'text': out.get('result') or '', 'data': data, 'cost': out.get('total_cost_usd') or 0,
+            'model': ','.join((out.get('modelUsage') or {}).keys()) or model,
+            'usage': {k: usage.get(k, 0) for k in ('input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens')}}
+
+
+# ── the record as text ────────────────────────────────────────────────────────
+
+def hms(t):
+    t = int(t)
+    return f'{t // 3600:02d}:{t // 60 % 60:02d}:{t % 60:02d}'
+
+
+def speaker_name(rec, label):
+    return (rec.get('names') or {}).get(label) or label
+
+
+def record_text(rec):
+    """`[HH:MM:SS] Name: text`, the name written only where the speaker changes (a blank line between
+    turns) — the compact form every prompt carries."""
+    out, last = [], None
+    for l in rec['lines']:
+        who = speaker_name(rec, l.get('speaker')) if l.get('speaker') else ''
+        if who and who != last:
+            out.append(f'\n[{hms(l["t"])}] {who}: {l["text"]}')
+            last = who
+        else:
+            out.append(f'[{hms(l["t"])}] {l["text"]}')
+    return '\n'.join(out).strip()
+
+
+def _header(rec):
+    names = rec.get('names') or {}
+    who = ', '.join(f'{k} = {v}' for k, v in names.items()) if names else ', '.join(rec.get('speakers') or []) or 'not labelled'
+    mins = int(rec.get('duration') or 0) // 60
+    return f'VIDEO: {rec["title"] or rec["url"]}\nLINK: {rec["url"]}\nLENGTH: {mins} min\nSPEAKERS: {who}\nRECORD v{rec["version"]} — each line is [HH:MM:SS] text, timed from the start of the original video. A turn starts with [HH:MM:SS] SPEAKER: and the lines after it are the same speaker until the next name.'
+
+
+# ── analysis ──────────────────────────────────────────────────────────────────
+
+EXAMINE_TEXT = {
+    'claims': 'CLAIMS — every factual, scientific, historical or medical claim that matters to the argument (contested, consequential or false), with verdict, severity, explanation and evidence, attributed to its speaker.',
+    'fallacies': 'FALLACIES — every logical fallacy, apologetic move or cognitive bias, named precisely, with the passage, attributed to its speaker.',
+    'answers': 'EXCHANGES — every real question one participant (or the moderator) puts to another, and whether it was answered: ANSWERED, PARTIAL (touched but core left unanswered) or DODGED (changed subject, attacked the asker, filibustered, answered a different question). One sentence on why. Skip rhetorical questions and pleasantries.',
+    'moderation': 'MODERATION — was it FAIR, UNEVEN or ABSENT, with concrete points: one-sided interruptions, unequal time, missed or one-sided follow-ups, leading questions.',
+    'tally': 'TALLY — attribute every claim and fallacy to its speaker so they can be counted (no extra output).',
+    'contradictions': 'CONTRADICTIONS — places where a speaker contradicts what they said earlier in the same recording.',
+}
+
+_T = {'type': 'string', 'description': 'HH:MM:SS, copied from the record line'}
+_S = {'type': 'string'}
+ANALYSIS_SCHEMA = {
+    'type': 'object', 'additionalProperties': False,
+    'required': ['claims', 'fallacies', 'exchanges', 'contradictions', 'moderation'],
+    'properties': {
+        'claims': {'type': 'array', 'items': {'type': 'object', 'additionalProperties': False,
+                   'required': ['t', 'speaker', 'claim', 'verdict', 'severity', 'explanation', 'sources'],
+                   'properties': {'t': _T, 'tEnd': _T, 'speaker': _S, 'claim': _S,
+                                  'verdict': {'type': 'string', 'enum': ['FALSE', 'TRUE', 'MISLEADING', 'PARTLY TRUE', 'UNPROVEN']},
+                                  'severity': {'type': 'string', 'enum': ['HIGH', 'MEDIUM', 'LOW']}, 'explanation': _S,
+                                  'sources': {'type': 'array', 'items': {'type': 'object', 'additionalProperties': False,
+                                              'required': ['label'], 'properties': {'label': _S, 'note': _S}}}}}},
+        'fallacies': {'type': 'array', 'items': {'type': 'object', 'additionalProperties': False,
+                      'required': ['t', 'speaker', 'name', 'passage', 'explanation'],
+                      'properties': {'t': _T, 'tEnd': _T, 'speaker': _S, 'name': _S, 'passage': _S, 'explanation': _S}}},
+        'exchanges': {'type': 'array', 'items': {'type': 'object', 'additionalProperties': False,
+                      'required': ['t', 'tEnd', 'asker', 'answerer', 'question', 'answerSummary', 'verdict', 'why'],
+                      'properties': {'t': _T, 'tEnd': _T, 'asker': _S, 'answerer': _S, 'question': _S, 'answerSummary': _S,
+                                     'verdict': {'type': 'string', 'enum': ['ANSWERED', 'PARTIAL', 'DODGED']}, 'why': _S}}},
+        'contradictions': {'type': 'array', 'items': {'type': 'object', 'additionalProperties': False,
+                           'required': ['t', 'earlierT', 'speaker', 'earlier', 'later', 'explanation'],
+                           'properties': {'t': _T, 'earlierT': _T, 'speaker': _S, 'earlier': _S, 'later': _S, 'explanation': _S}}},
+        'moderation': {'type': ['object', 'null'], 'additionalProperties': False, 'required': ['verdict', 'summary', 'points'],
+                       'properties': {'verdict': {'type': 'string', 'enum': ['FAIR', 'UNEVEN', 'ABSENT']}, 'summary': _S,
+                                      'points': {'type': 'array', 'items': _S}}},
+    },
+}
+
+
+def _secs(v):
+    import analysis
+    s = analysis._secs(v)
+    return s if s is not None else 0.0
+
+
+def _ms(v):
+    return int(round(_secs(v) * 1000))
+
+
+def analyse(rec, brief='', language='English', examine=(), base=None, max_claims=25):
+    """A full analysis of the record. `base` is an earlier run to refine: its result and the operator's
+    feedback (`brief`) go in, and a whole new analysis comes out. Returns the debate-analysis shape the
+    card builder already takes, plus `usage`/`cost`/`model`/`raw`."""
+    examine = [e for e in examine if e in EXAMINE_TEXT] or ['claims', 'fallacies']
+    tasks = '\n'.join(f'- {EXAMINE_TEXT[e]}' for e in examine)
+    system = f'''{house_rules()}
+
+OUTPUT LANGUAGE: {language}. Every free-text field is written in {language} whatever language the record is in — translate quotes. Speaker names, verdict words and fallacy names stay as given.
+
+Your task: analyse the whole record below, knowing the context of the entire conversation. Examine it for:
+{tasks}
+
+Rules:
+- Every "t" is the [HH:MM:SS] of the record line where the item happens (for an exchange: where the question is asked); "tEnd" is the line where it ends.
+- Speaker names exactly as the record gives them.
+- At most {max_claims} claims — the ones that matter to the argument. Leave any list you were not asked for empty, and "moderation" null unless asked.'''
+    parts = [_header(rec), 'RECORD:', record_text(rec)]
+    if base:
+        parts += [f'YOUR PREVIOUS ANALYSIS (version {base["version"]}):', base['result'],
+                  'OPERATOR FEEDBACK — produce a complete new analysis that keeps what was right and fixes this:',
+                  brief or '(no specific feedback: improve accuracy and argument strength)']
+    elif brief:
+        parts += ["OPERATOR'S BRIEF FOR THIS ANALYSIS:", brief]
+    r = run(system, '\n\n'.join(parts), ANALYSE_MODEL, schema=ANALYSIS_SCHEMA, effort='high')
+    d = r['data']
+    res = {
+        'claims': [{**c, 'timestampMs': _ms(c['t']), 'durationMs': max(3000, _ms(c.get('tEnd') or c['t']) - _ms(c['t'])) or 5000}
+                   for c in d.get('claims') or []] if 'claims' in examine else [],
+        'fallacies': [{**f, 'timestampMs': _ms(f['t']), 'durationMs': max(3000, _ms(f.get('tEnd') or f['t']) - _ms(f['t'])) or 5000}
+                      for f in d.get('fallacies') or []] if 'fallacies' in examine else [],
+        'exchanges': [{**x, 'timestampMs': _ms(x['t']), 'tEndMs': _ms(x.get('tEnd') or x['t'])}
+                      for x in d.get('exchanges') or []] if 'answers' in examine else [],
+        'contradictions': [{**c, 'timestampMs': _ms(c['t']), 'earlierMs': _ms(c.get('earlierT'))}
+                           for c in d.get('contradictions') or []] if 'contradictions' in examine else [],
+        'moderation': d.get('moderation') if 'moderation' in examine else None,
+    }
+    res.update(language=language, model=r['model'], usage=r['usage'], cost=r['cost'], raw=json.dumps(d, ensure_ascii=False))
+    return res
+
+
+# ── questions ─────────────────────────────────────────────────────────────────
+
+def ask(rec, question):
+    """A question about the video, answered from the whole record. Every point cites its [HH:MM:SS]."""
+    system = f'''{house_rules()}
+
+You answer the operator's question about one recorded video, using only its record below (and general knowledge for evidence). Read the whole conversation for context before answering.
+- Cite every point with its timestamp in square brackets, exactly as [HH:MM:SS], and name the speaker.
+- When asked how someone answered, quote or closely paraphrase what they actually said, then judge it: did they answer, partly answer, or dodge — and how strong was the answer.
+- Answer in the language the question is written in. Be concise: a few short paragraphs at most.
+- Plain text only: no Markdown (no asterisks, no # headings). Start a paragraph with a short label and a colon where it helps, e.g. "Verdict: …".'''
+    r = run(system, '\n\n'.join([_header(rec), 'RECORD:', record_text(rec), 'QUESTION:', question]), ASK_MODEL, effort='medium', timeout=300)
+    return {'answer': r['text'].strip(), 'model': r['model'], 'usage': r['usage'], 'cost': r['cost']}

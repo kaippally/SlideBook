@@ -3,6 +3,7 @@
 The prompt and the parse are a port of StudioMate's server/src/factCheckCore.ts (analyseTranscript).
 Keep the two textually in step: a change to the debunker there should be copied here.
 """
+from concurrent.futures import ThreadPoolExecutor
 import shutil
 import json, logging, os, re, subprocess, uuid
 from pathlib import Path
@@ -141,6 +142,20 @@ def download_media(url, name):
         return normalize_audio(Path(done or y.prepare_filename(info)))
 
 
+def download_full(url, name):
+    """The best the source has (up to 2160p), for rendering shorts: the canvas copy stops at 720p."""
+    out = DATA / 'media' / 'video'
+    out.mkdir(parents=True, exist_ok=True)
+    import yt_dlp
+    opts = {'quiet': True, 'noplaylist': True, 'outtmpl': str(out / f'{name}.%(ext)s'),
+            'format': 'bv*[height<=2160]+ba/b', 'merge_output_format': 'mkv', **YTDLP_JS,
+            'ffmpeg_location': tool('ffmpeg') if tool('ffmpeg') != 'ffmpeg' else None}
+    with yt_dlp.YoutubeDL({k: v for k, v in opts.items() if v is not None}) as y:
+        info = y.extract_info(url, download=True)
+        done = (info.get('requested_downloads') or [{}])[0].get('filepath')
+        return normalize_audio(Path(done or y.prepare_filename(info)))
+
+
 def normalize_audio(path: Path) -> Path:
     """Bring the soundtrack to broadcast loudness (EBU R128, -16 LUFS, -1.5 dBTP). A browser plays a
     file at no more than its own level, and many uploads are mixed far quieter than a show. The picture
@@ -167,16 +182,17 @@ def normalize_audio(path: Path) -> Path:
     return dst
 
 
-PART_SEC = 300
+PART_SEC = 60   # Gemini's clock drifts within a request; in 5-minute parts captions ran up to ~20 s off the speech
 
 
 def gemini_transcribe(path: Path, speakers=None, progress=None):
     """No caption track, or a debate that needs to know who said what: have Gemini listen and return
     timestamped lines. `speakers` (a hint such as "A = host, B = guest", or '' to detect) labels each line.
 
-    The audio is cut into 5-minute parts and each part is transcribed on its own. One request for an hour
-    of audio comes back truncated or with timestamps that drift past the end of the recording; a short part
-    keeps both honest. Speaker names found so far are handed to the next part so they stay the same."""
+    The audio is cut into 1-minute parts and each part is transcribed on its own. Gemini's timestamps drift
+    within a request and it drops stretches of speech; in 5-minute parts both were bad enough to put captions
+    ~20 s off the words. A minute keeps them honest. Plain parts run four at a time; a debate runs in order, because the speaker names found so far are
+    handed to the next part so they stay the same."""
     work = path.with_name(path.stem + '.parts')
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir()
@@ -184,45 +200,80 @@ def gemini_transcribe(path: Path, speakers=None, progress=None):
                     '-f', 'segment', '-segment_time', str(PART_SEC), '-reset_timestamps', '1', str(work / 'p%03d.m4a')],
                    check=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     parts = sorted(work.glob('p*.m4a'))
+    spans = [_media_seconds(p) or PART_SEC for p in parts]
     client = gemini_client()
     lines, names, lang = [], [], 'en'
+    done = [0]
+
+    def one(i):
+        data, raw = {}, []
+        if spans[i] < 1.0:   # the sliver the segmenter leaves at the end holds nothing to hear
+            return data, raw
+        for attempt in range(3):
+            try:
+                data = _transcribe_part(client, parts[i], speakers, list(names))
+            except AnalysisError as e:
+                log.info('part %d of %s unreadable (attempt %d): %s', i, path.name, attempt + 1, e)
+                data = {}
+                continue
+            raw = [{**l, 't': _secs(l.get('t'))} for l in data.get('lines') or [] if str(l.get('text', '')).strip()]
+            raw = [l for l in raw if l['t'] is not None]
+            if _part_ok(raw, spans[i]):
+                break
+        done[0] += 1
+        if progress:
+            progress(f'Transcribing{" who said what" if speakers is not None else ""} — part {done[0]} of {len(parts)}')
+        return data, raw
+
     try:
-        for i, part in enumerate(parts):
-            if progress:
-                progress(f'Transcribing{" who said what" if speakers is not None else ""} — part {i + 1} of {len(parts)}')
-            span = _media_seconds(part) or PART_SEC
-            for attempt in range(2):
-                data = _transcribe_part(client, part, speakers, names)
-                raw = [l for l in data.get('lines') or [] if str(l.get('text', '')).strip() and isinstance(l.get('t'), (int, float))]
-                if _part_ok(raw, span):
-                    break
+        if speakers is None:
+            with ThreadPoolExecutor(4) as pool:
+                results = list(pool.map(one, range(len(parts))))
+        else:
+            results = []
+            for i in range(len(parts)):
+                results.append(one(i))
+                for n in results[-1][0].get('speakers') or []:
+                    if str(n) not in names:
+                        names.append(str(n))
+        offset = 0.0
+        for i, (data, raw) in enumerate(results):
+            span = spans[i]
             lang = str(data.get('language') or lang)[:2]
-            for n in data.get('speakers') or []:
-                if str(n) not in names:
-                    names.append(str(n))
-            offset = i * PART_SEC
-            # Gemini's clock drifts: within one part it can run well past the part's real length. A line
-            # pinned at the end is worse than a stretched one, so an overshooting part is rescaled. A part
-            # whose times are still nonsense after a second try (all crammed into a few seconds) is spread
-            # evenly instead: approximate, but never a pile of lines on one moment.
-            top = max((float(l['t']) for l in raw), default=0)
+            # A part whose clock still overshoots is rescaled; one whose times are nonsense after a second try
+            # (all crammed into a few seconds) is spread evenly — approximate, never a pile on one moment.
+            top = max((l['t'] for l in raw), default=0)
             k = span / top if top > span * 1.02 else 1.0
             even = not _part_ok(raw, span)
             if even:
                 raw = _merge_fragments(raw)
             for n, l in enumerate(raw):
                 text = str(l['text']).strip()
-                t = span * n / max(1, len(raw)) if even else min(max(float(l['t']) * k, 0), span)
-                line = {'t': round(offset + t, 2), 'd': float(l.get('d') or 3), 'text': text}
+                t = span * n / max(1, len(raw)) if even else min(max(l['t'] * k, 0), span)
+                line = {'t': round(offset + t, 2), 'd': _secs(l.get('d')) or 3.0, 'text': text}
                 if speakers is not None:
                     line['speaker'] = str(l.get('speaker') or '').strip()
                     if line['speaker'] and line['speaker'] not in names:
                         names.append(line['speaker'])
                 lines.append(line)
+            offset += span
     finally:
         shutil.rmtree(work, ignore_errors=True)
     lines.sort(key=lambda l: l['t'])
     return {'lines': lines, 'langCode': lang, 'generated': True, 'via': 'gemini', 'speakers': names}
+
+
+def _secs(v):
+    """Seconds from a number, or from "SS", "MM:SS(.s)" or "H:MM:SS(.s)" — Gemini places MM:SS far better."""
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        out = 0.0
+        for part in str(v).strip().split(':'):
+            out = out * 60 + float(part)
+        return out
+    except ValueError:
+        return None
 
 
 def _merge_fragments(raw, words=14):
@@ -259,8 +310,9 @@ def _media_seconds(path: Path):
 def _transcribe_part(client, part: Path, speakers, names):
     if speakers is None:
         prompt = ('Transcribe this audio verbatim in its original language. Split it into short caption lines of one '
-                  'sentence or less. "t" is seconds from the start of THIS clip. Respond ONLY with JSON: '
-                  '{"language":"<ISO 639-1 code>","lines":[{"t":<start seconds>,"d":<duration seconds>,"text":"..."}]}')
+                  'sentence or less. "t" is when the line starts, as "MM:SS.s" from the start of THIS clip; "d" is how long it is spoken, '
+                  'in seconds. Respond ONLY with JSON: '
+                  '{"language":"<ISO 639-1 code>","lines":[{"t":"MM:SS.s","d":<seconds>,"text":"..."}]}')
     else:
         known = f'Speakers already identified earlier in this recording: {", ".join(names)} — reuse exactly these names for them. ' if names else ''
         hint = (f'The speakers are: {speakers}. Use those names. ' if speakers else
@@ -268,8 +320,9 @@ def _transcribe_part(client, part: Path, speakers, names):
         prompt = ('This is one part of a longer recording. Transcribe it verbatim in its original language, with speaker diarisation. '
                   'Split it into short caption lines of one sentence or less, and never let one line run across a change of speaker. '
                   + hint + known + "Keep a speaker's name identical on every line. "
-                  '"t" is seconds from the start of THIS clip. Respond ONLY with JSON: {"language":"<ISO 639-1 code>",'
-                  '"speakers":["<name>",...],"lines":[{"t":<start seconds>,"d":<duration seconds>,"speaker":"<name>","text":"..."}]}')
+                  '"t" is when the line starts, as "MM:SS.s" from the start of THIS clip; "d" is how long it is spoken, in seconds. '
+                  'Respond ONLY with JSON: {"language":"<ISO 639-1 code>",'
+                  '"speakers":["<name>",...],"lines":[{"t":"MM:SS.s","d":<seconds>,"speaker":"<name>","text":"..."}]}')
     f = client.files.upload(file=str(part))
     r = client.models.generate_content(model=DEFAULT_MODEL, contents=[f, prompt],
                                        config={'temperature': 0, 'response_mime_type': 'application/json'})
@@ -284,7 +337,7 @@ def _loose_json(text):
     except ValueError:
         pass
     lines = []
-    for m in re.finditer(r'\{[^{}]*"t"\s*:\s*[\d.]+[^{}]*\}', raw):
+    for m in re.finditer(r'\{[^{}]*"t"\s*:\s*"?[\d.:]+"?[^{}]*\}', raw):
         try:
             lines.append(json.loads(m.group(0)))
         except ValueError:

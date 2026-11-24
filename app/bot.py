@@ -79,8 +79,13 @@ async def on_text(update, _ctx):
         return
     import videos
     for url in urls:
+        known = videos.transcribed(url)
+        if known:
+            await update.message.reply_text('⚠️ ' + videos.already_note(known)['warning'])
         msg = await update.message.reply_text(f'Adding to the video library: {url}')
-        v = await videos.ingest(url, 'telegram', tg={'chatId': msg.chat_id, 'messageId': msg.message_id})
+        u = update.effective_user
+        v = await videos.ingest(url, 'telegram', tg={'chatId': msg.chat_id, 'messageId': msg.message_id},
+                                sender=u and {'id': u.id, 'name': u.full_name, 'username': u.username or ''})
         if v['status'] == 'ready':
             await on_broadcast({'type': 'video', 'video': videos.payload(v)})
 
@@ -125,8 +130,105 @@ async def on_callback(update, _ctx):
                          options={'tg': {'chatId': msg.chat_id, 'messageId': msg.message_id}})
         await core.broadcast({'type': 'job', 'job': db.get_job(jid)})
         await q.answer('Queued')
+    elif kind == 'ms' and bid.isdigit() and (v := db.get_video(int(bid))):
+        msg = await q.message.reply_text(f'✂ Looking for shorts in: {v["title"] or v["url"]}')
+        db.update_video(v['id'], tg={'chatId': msg.chat_id, 'messageId': msg.message_id, 'via': 'own', 'shorts': 'pending'})
+        await q.answer('Queued')
+    elif kind in ('st', 'sa'):
+        await q.answer()
+        await q.edit_message_reply_markup(_toggled(q.message.reply_markup, q.data))
+    elif kind == 'sk' and bid.isdigit() and (v := db.get_video(int(bid))):
+        import shorts
+        ids = _ticked(q.message.reply_markup)
+        if not ids:
+            await q.answer('Tick at least one')
+            return
+        kept = await shorts.confirm_and_render(v, ids)
+        import videos
+        await videos.publish(v['id'])
+        await q.answer('Confirmed')
+        await q.edit_message_text(f'{q.message.text}\n\n✅ Kept {len(kept)}: ' + '; '.join(p['title'] for p in kept)
+                                  + '\nOpen SlideBook Videos → Short builder to edit and render them.')
     else:
         await q.answer()
+
+
+# ── the shorts checklist ──────────────────────────────────────────────────────
+# State lives in the message itself: a button reads ☑ or ☐, so a tap flips its label and Confirm reads them back.
+
+def checklist(payload):
+    """(text, [[(label, data)]]) for a finished shorts search; the same layout StudioMate's bot draws."""
+    items = payload.get('shorts') or []
+    if not items:
+        return f"✂ No shorts found in “{payload.get('title')}”.", []
+    lines = [f"✂ {len(items)} possible shorts in “{payload.get('title')}”", '']
+    for n, s in enumerate(items, 1):
+        m, sec = divmod(int(round(s['length'])), 60)
+        lines.append(f"{n}. {s['title']} ({m}:{sec:02d} · score {s['score']})")
+        if s.get('idea'):
+            lines.append(f"   {s['idea'][:180]}")
+    lines += ['', 'Tick the ones to keep, then Confirm.']
+    text = '\n'.join(lines)
+    if len(text) > 4000:
+        text = text[:3990] + '…'
+    vid = payload['videoId']
+    rows = [[(f"☐ {n}. {s['title'][:40]}", f"st:{vid}:{s['id']}")] for n, s in enumerate(items, 1)]
+    rows.append([('Tick all', f'sa:{vid}'), ('✅ Confirm', f'sk:{vid}')])
+    return text, rows
+
+
+def render_text(payload):
+    nl = chr(10)
+    kept = '; '.join(payload.get('kept') or [])
+    if payload['status'] == 'rendering':
+        return f"✅ Kept: {kept}{nl}🎬 {payload.get('step')} at full resolution…"
+    done = payload.get('rendered') or []
+    text = f"🎬 {len(done)} short{'s' if len(done) != 1 else ''} rendered at 1080×1920 — SlideBook Videos → Shorts tab."
+    text += ''.join(f"{nl}• {t}" for t in done)
+    if payload.get('failed'):
+        text += f"{nl}⚠️ {payload['failed']} could not be rendered — see SlideBook."
+    return text
+
+
+def _toggled(markup, data):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    rows = []
+    every = data.startswith('sa:')
+    for row in markup.inline_keyboard:
+        out = []
+        for b in row:
+            label = b.text
+            if b.callback_data.startswith('st:') and (every or b.callback_data == data):
+                on = label.startswith('☑')
+                label = ('☑' if every or not on else '☐') + label[1:]
+            out.append(InlineKeyboardButton(label, callback_data=b.callback_data))
+        rows.append(out)
+    return InlineKeyboardMarkup(rows)
+
+
+def _ticked(markup):
+    return [int(b.callback_data.split(':')[2]) for row in markup.inline_keyboard for b in row
+            if b.callback_data.startswith('st:') and b.text.startswith('☑')]
+
+
+async def shorts_message(tg, payload):
+    if not _app:
+        return
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    kb = None
+    if payload['status'] == 'done':
+        text, rows = checklist(payload)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(t, callback_data=d) for t, d in r] for r in rows]) if rows else None
+    elif payload['status'] in ('rendering', 'rendered'):
+        text = render_text(payload)
+    elif payload['status'] == 'failed':
+        text = f"⚠️ Could not find shorts: {payload.get('error')}\n{payload.get('url')}"
+    else:
+        text = f"✂ {payload.get('step')}…\n{payload.get('url')}"
+    try:
+        await _app.bot.edit_message_text(text, chat_id=tg['chatId'], message_id=tg['messageId'], reply_markup=kb)
+    except Exception as e:
+        log.info('could not edit shorts message: %s', e)
 
 
 _last = {}
@@ -134,7 +236,7 @@ _last = {}
 
 async def _video_message(v):
     tg = v.get('tg') or {}
-    if not tg.get('messageId'):
+    if not tg.get('messageId') or tg.get('via') == 'studiomate' or tg.get('shorts'):
         return
     key = ('v', v['id'], v['status'], v['step'])
     if _last.get(key[:2]) == key:
@@ -144,7 +246,8 @@ async def _video_message(v):
     kb = None
     if v['status'] == 'ready':
         text = f"In the video library: {v['title'] or v['url']}\nOpen SlideBook → Videos to pick a range."
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton('🔎 Fact-check the whole video', callback_data=f"fc:{v['id']}")]])
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton('🔎 Fact-check the whole video', callback_data=f"fc:{v['id']}")],
+                                   [InlineKeyboardButton('✂ Mark shorts', callback_data=f"ms:{v['id']}")]])
     elif v['status'] == 'failed':
         text = f"Could not download: {v['error'] or 'unknown error'}\n{v['url']}"
     else:

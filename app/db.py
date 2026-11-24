@@ -30,9 +30,26 @@ CREATE TABLE IF NOT EXISTS videos (
   created_at REAL NOT NULL, updated_at REAL NOT NULL
 );
 DROP TABLE IF EXISTS tg_users;
+CREATE TABLE IF NOT EXISTS records (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, vkey TEXT NOT NULL, version INTEGER NOT NULL, kind TEXT NOT NULL,
+  url TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', duration REAL NOT NULL DEFAULT 0, video TEXT NOT NULL DEFAULT '',
+  lines TEXT NOT NULL, speakers TEXT NOT NULL DEFAULT '[]', names TEXT NOT NULL DEFAULT '{}',
+  lang TEXT NOT NULL DEFAULT '', via TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, vkey TEXT NOT NULL, record_id INTEGER NOT NULL, version INTEGER NOT NULL,
+  kind TEXT NOT NULL, prompt TEXT NOT NULL DEFAULT '', base_run INTEGER, model TEXT NOT NULL DEFAULT '',
+  result TEXT NOT NULL DEFAULT '', book_id TEXT, usage TEXT NOT NULL DEFAULT '{}', created_at REAL NOT NULL
+);
 ''')
 if 'subtitles' not in {r[1] for r in _con.execute('PRAGMA table_info(videos)')}:
     _con.execute("ALTER TABLE videos ADD COLUMN subtitles TEXT NOT NULL DEFAULT '[]'")
+if 'full' not in {r[1] for r in _con.execute('PRAGMA table_info(videos)')}:
+    _con.execute("ALTER TABLE videos ADD COLUMN full TEXT NOT NULL DEFAULT ''")
+if 'plans' not in {r[1] for r in _con.execute('PRAGMA table_info(videos)')}:
+    _con.execute("ALTER TABLE videos ADD COLUMN plans TEXT NOT NULL DEFAULT '[]'")
+if 'senders' not in {r[1] for r in _con.execute('PRAGMA table_info(videos)')}:
+    _con.execute("ALTER TABLE videos ADD COLUMN senders TEXT NOT NULL DEFAULT '[]'")
 _con.commit()
 
 
@@ -103,6 +120,7 @@ def _book(r, full=True):
     else:
         b['first'] = manifest[0] if manifest else None
         b['sourceTitle'] = source.get('title', '')
+        b['recordId'] = source.get('recordId')
         b['cards'] = sum(1 for p in manifest if p['kind'] in CARD_KINDS)
     return b
 
@@ -123,15 +141,32 @@ def create_book(title, manifest=None, source=None, styles=None, group=''):
     now = time.time()
     bid = new_id('b')
     if styles is None:
-        styles = get_setting('defaultStyles') or BUILTIN_STYLES
+        styles = get_setting('lastStyles') or get_setting('defaultStyles') or BUILTIN_STYLES
+    aspect = float(get_setting('lastCardAspect') or 16 / 9)
     with _lock:
-        _con.execute('INSERT INTO books(id,title,grp,styles,manifest,source,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)',
-                     (bid, title, group, json.dumps(styles), json.dumps(manifest or []), json.dumps(source or {}), now, now))
+        _con.execute('INSERT INTO books(id,title,grp,styles,manifest,source,created_at,updated_at,card_aspect) VALUES(?,?,?,?,?,?,?,?,?)',
+                     (bid, title, group, json.dumps(styles), json.dumps(manifest or []), json.dumps(source or {}), now, now, aspect))
         _con.commit()
     return get_book(bid)
 
 
+# The look a new book starts from is the one last edited: card look, slide and video poses, surface, border.
+# What belongs to one book's own pages (per-page styles, notes, heading texts, clip ranges) stays behind.
+_PER_BOOK = ('pages', 'notes', 'headings', 'sfx')
+
+
+def remember_look(styles):
+    look = {k: v for k, v in styles.items() if k not in _PER_BOOK}
+    if isinstance(look.get('video'), dict):
+        look['video'] = {k: v for k, v in look['video'].items() if k != 'ranges'}
+    set_setting('lastStyles', look)
+
+
 def update_book(book_id, **fields):
+    if isinstance(fields.get('styles'), dict):
+        remember_look(fields['styles'])
+    if fields.get('cardAspect'):
+        set_setting('lastCardAspect', fields['cardAspect'])
     cols = {'title': 'title', 'group': 'grp', 'styles': 'styles', 'cardAspect': 'card_aspect',
             'manifest': 'manifest', 'source': 'source'}
     sets, vals = [], []
@@ -174,6 +209,8 @@ def referenced_media():
         for p in json.loads(r['manifest']):
             if isinstance(p.get('ref'), str):
                 refs.add(p['ref'])
+            if isinstance(p.get('video'), str):
+                refs.add(p['video'])
         snd = json.loads(r['styles']).get('sound') or {}
         if snd.get('url', '').startswith('/media/'):
             refs.add(snd['url'][len('/media/'):])
@@ -225,6 +262,12 @@ def get_job(job_id):
     return _job(r) if r else None
 
 
+def done_jobs(url):
+    with _lock:
+        rows = _con.execute("SELECT * FROM queue WHERE url=? AND status='done' ORDER BY id DESC", (url,)).fetchall()
+    return [_job(r) for r in rows]
+
+
 def list_jobs(limit=30):
     with _lock:
         rows = _con.execute('SELECT * FROM queue ORDER BY id DESC LIMIT ?', (limit,)).fetchall()
@@ -233,7 +276,7 @@ def list_jobs(limit=30):
 
 # ── videos (links that arrived by Telegram, for the Videos window) ───────────
 
-_VIDEO_JSON = ('summaries', 'shorts', 'tg', 'subtitles')
+_VIDEO_JSON = ('summaries', 'shorts', 'tg', 'subtitles', 'plans', 'senders')
 
 
 def _video(r, full=False):
@@ -241,6 +284,7 @@ def _video(r, full=False):
     for k in _VIDEO_JSON:
         d[k] = json.loads(d[k])
     tr = d.pop('transcript')
+    d['transcriptState'] = 'ready' if '"lines": [{' in tr else ('failed' if '"error"' in tr else 'none')
     if full:
         d['transcript'] = json.loads(tr) if tr else None
     return d
@@ -257,6 +301,12 @@ def add_video(url, origin, tg=None):
                            (url, origin, json.dumps(tg or {}), now, now))
         _con.commit()
         return get_video(cur.lastrowid), True
+
+
+def video_by_url(url, full=False):
+    with _lock:
+        r = _con.execute('SELECT * FROM videos WHERE url=?', (url,)).fetchone()
+    return _video(r, full) if r else None
 
 
 def get_video(video_id, full=False):
@@ -288,6 +338,12 @@ def next_pending_video():
     return _video(r) if r else None
 
 
+def next_untranscribed_video(skip=()):
+    with _lock:
+        rows = _con.execute("SELECT * FROM videos WHERE status='ready' AND transcript IN ('', '{}') ORDER BY id DESC").fetchall()
+    return next((_video(r) for r in rows if r['id'] not in skip), None)
+
+
 def delete_video(video_id):
     with _lock:
         _con.execute('DELETE FROM videos WHERE id=?', (video_id,))
@@ -298,6 +354,95 @@ def requeue_videos():
     with _lock:
         _con.execute("UPDATE videos SET status='pending' WHERE status='downloading'")
         _con.commit()
+
+
+# ── records: the one text record of a video, and the Claude runs made from it ─
+# A video is transcribed once; every later analysis, question, short or edit reads the record, never
+# the video. `vkey` names the video across links to it (youtube id, else the link without its query).
+
+def _record(r, full=True):
+    d = dict(r)
+    for k in ('lines', 'speakers', 'names'):
+        d[k] = json.loads(d[k])
+    d['lineCount'] = len(d['lines'])
+    if not full:
+        d.pop('lines')
+    return d
+
+
+def latest_record(vkey):
+    with _lock:
+        r = _con.execute('SELECT * FROM records WHERE vkey=? ORDER BY version DESC LIMIT 1', (vkey,)).fetchone()
+    return _record(r) if r else None
+
+
+def get_record(record_id, full=True):
+    with _lock:
+        r = _con.execute('SELECT * FROM records WHERE id=?', (record_id,)).fetchone()
+    return _record(r, full) if r else None
+
+
+def save_record(vkey, kind, url, title, duration, video, lines, speakers, lang, via):
+    with _lock:
+        prev = _con.execute('SELECT version, names FROM records WHERE vkey=? ORDER BY version DESC LIMIT 1', (vkey,)).fetchone()
+        cur = _con.execute('INSERT INTO records(vkey,version,kind,url,title,duration,video,lines,speakers,names,lang,via,created_at) '
+                           'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                           (vkey, (prev['version'] + 1) if prev else 1, kind, url, title, duration, video,
+                            json.dumps(lines, ensure_ascii=False), json.dumps(speakers, ensure_ascii=False),
+                            prev['names'] if prev else '{}', lang, via, time.time()))
+        _con.commit()
+        return get_record(cur.lastrowid)
+
+
+def set_record_names(record_id, names):
+    with _lock:
+        _con.execute('UPDATE records SET names=? WHERE id=?', (json.dumps(names, ensure_ascii=False), record_id))
+        _con.commit()
+    return get_record(record_id, full=False)
+
+
+def list_records():
+    """The newest record of every video, newest video first."""
+    with _lock:
+        rows = _con.execute('SELECT r.* FROM records r JOIN (SELECT vkey, MAX(version) v FROM records GROUP BY vkey) m '
+                            'ON r.vkey=m.vkey AND r.version=m.v ORDER BY r.created_at DESC').fetchall()
+    return [_record(r, full=False) for r in rows]
+
+
+def _run(r):
+    d = dict(r)
+    d['usage'] = json.loads(d['usage'])
+    return d
+
+
+def add_run(vkey, record_id, kind, prompt, model, result, usage, base_run=None, book_id=None):
+    with _lock:
+        n = _con.execute('SELECT COUNT(*) FROM runs WHERE vkey=? AND kind=?', (vkey, kind)).fetchone()[0]
+        cur = _con.execute('INSERT INTO runs(vkey,record_id,version,kind,prompt,base_run,model,result,book_id,usage,created_at) '
+                           'VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                           (vkey, record_id, n + 1, kind, prompt, base_run, model, result, book_id,
+                            json.dumps(usage or {}), time.time()))
+        _con.commit()
+        return get_run(cur.lastrowid)
+
+
+def get_run(run_id):
+    with _lock:
+        r = _con.execute('SELECT * FROM runs WHERE id=?', (run_id,)).fetchone()
+    return _run(r) if r else None
+
+
+def set_run_book(run_id, book_id):
+    with _lock:
+        _con.execute('UPDATE runs SET book_id=? WHERE id=?', (book_id, run_id))
+        _con.commit()
+
+
+def list_runs(vkey, kind=None):
+    with _lock:
+        rows = _con.execute('SELECT * FROM runs WHERE vkey=? AND (? IS NULL OR kind=?) ORDER BY id DESC',
+                            (vkey, kind, kind)).fetchall()
+    return [_run(r) for r in rows]
 
 
 def book_video_for(url):

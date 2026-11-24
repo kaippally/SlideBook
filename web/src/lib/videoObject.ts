@@ -5,7 +5,7 @@ import {
 import type { SlideLayerModel } from '../components/SlideLayer';
 import { BLANK, isCard } from './bookModel';
 import type { Book } from './types';
-import { sameSegment, segmentFirst, segmentSpan } from './segments';
+import { sameSegment, segmentFirst, segmentKeyPage, segmentSpan, segments } from './segments';
 
 /**
  * The book's video object: the source video as a second thing on the stage, posed, surfaced and
@@ -31,6 +31,8 @@ export interface VideoObjectStyle {
   /** Blur the picture (to hide a face or a logo): on/off, and how much, px in the 1920 space. */
   blurOn?: boolean;
   blur?: number;
+  /** Paused from the transport: the video object fades out until it plays again. */
+  hideOnPause?: boolean;
   /** A segment's own clip range, set on the clip timeline, keyed by the segment's first page id. */
   ranges?: Record<string, { t0: number; t1: number }>;
   presentation?: Partial<SlidePresentationStyle>;
@@ -60,6 +62,7 @@ export interface ResolvedVideo {
   maxLen: number;
   blurOn: boolean;
   blur: number;
+  hideOnPause: boolean;
   pres: SlidePresentationStyle;
   pageStyle: SlidePageStyle;
   surface: SlideSurface;
@@ -80,6 +83,7 @@ export function resolveVideo(book: Book | null): ResolvedVideo | null {
     maxLen: v.maxLen ?? DEFAULT_VIDEO.maxLen,
     blurOn: !!v.blurOn,
     blur: v.blur ?? DEFAULT_VIDEO.blur,
+    hideOnPause: !!v.hideOnPause,
     pres: resolvePresentation(v.presentation ?? DEFAULT_VIDEO_PRES),
     pageStyle: {
       ...resolvePage(v.page), ...DEFAULT_POSE_OVERRIDE, ...surface, ...resolveBorder(book.styles?.border),
@@ -95,14 +99,32 @@ export function clipForStep(book: Book | null, n: number, from: number | null): 
   const v = resolveVideo(book);
   const entry = book?.manifest[n - 1];
   // Every timed card plays its segment's clip — a question as much as a claim.
-  if (!book || !v || !v.on || !entry || !isCard(entry) || entry.card?.t == null) return null;
+  if (!book || !v || !v.on || !entry || !segmentSpan(book, n)) return null;
   if (from != null && sameSegment(book, from, n)) return null;
-  return segmentClip(book, n)!.range;
+  return playRange(book, n);
+}
+
+/** What a step to page `n` plays: its segment's clip, started early enough to run through every hidden
+ *  segment just before it — their slides are skipped, their video is not. Mirrors the server's `_play_span`. */
+export function playRange(book: Book, n: number): { t0: number; t1: number } | null {
+  const own = segmentClip(book, n);
+  if (!own) return null;
+  let t0 = own.range.t0;
+  const segs = segments(book);
+  const i = segs.findIndex(s => s.pages.some(x => x.n === n));
+  for (let k = i - 1; k >= 0; k--) {
+    const s = segs[k]!;
+    if (s.t == null || !s.pages.every(x => x.p.hidden)) break;
+    const c = segmentClip(book, s.pages[0]!.n);
+    if (!c) break;
+    t0 = Math.min(t0, c.range.t0);
+  }
+  return { t0, t1: own.range.t1 };
 }
 
 /** A segment's clip: the range it plays (its own, when set on the clip timeline) and the automatic one
  *  (its statements, PRE before and POST after, no longer than `maxLen`). Mirrors `core._clip_span`. */
-export function segmentClip(book: Book, n: number): { range: { t0: number; t1: number }; auto: { t0: number; t1: number }; custom: boolean; first: number } | null {
+export function segmentClip(book: Book, n: number): { range: { t0: number; t1: number }; auto: { t0: number; t1: number }; custom: boolean; first: number; keyId: string } | null {
   const v = resolveVideo(book);
   const span = segmentSpan(book, n);
   if (!v || !span) return null;
@@ -110,8 +132,9 @@ export function segmentClip(book: Book, n: number): { range: { t0: number; t1: n
   // A question's span is its whole answer, minutes long; the clip stops at the longest the show wants.
   const auto = { t0, t1: v.maxLen > 0 ? Math.min(span.tEnd + v.post, t0 + v.maxLen) : span.tEnd + v.post };
   const first = segmentFirst(book, n);
-  const own = videoStyle(book).ranges?.[book.manifest[first - 1]!.id];
-  return { range: own ?? auto, auto, custom: !!own, first };
+  const keyId = segmentKeyPage(book, n)!.id;
+  const own = videoStyle(book).ranges?.[keyId];
+  return { range: own ?? auto, auto, custom: !!own, first, keyId };
 }
 
 /** The frame of `file` at `t` as a JPEG (`/api/poster`, cached): what a clip shows while it flies in

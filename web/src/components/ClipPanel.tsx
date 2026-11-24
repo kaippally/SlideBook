@@ -2,13 +2,67 @@ import { useEffect, useRef, useState } from 'react';
 import { seekSlideVideos, useSlideVideoClock } from '../lib/slideVideoClock';
 import { segmentClip, type ResolvedVideo } from '../lib/videoObject';
 import { segments } from '../lib/segments';
-import type { Book } from '../lib/types';
+import type { Book, BookSfx, SoundFx } from '../lib/types';
+import { SFX_DRAG } from './AssetBin';
 
 const fmt = (s: number) => {
   const v = Math.max(0, s);
   const m = Math.floor(v / 60), r = v - m * 60;
   return `${m}:${r.toFixed(1).padStart(4, '0')}`;
 };
+
+/** The book's sound effects over the same span as the lane above: drop one from the Sound FX tab to
+ *  place it, drag a marker to move it, right-click to remove it. Times are seconds of the source video. */
+function SoundLane({ sfx, lib, a, b, clockT, onSfx }: { sfx: BookSfx[]; lib: SoundFx[]; a: number; b: number; clockT: number | null; onSfx: (next: BookSfx[]) => void }) {
+  const el = useRef<HTMLDivElement>(null);
+  const names = new Map(lib.map(s => [s.file, s.name]));
+  const at = (x: number) => {
+    const r = el.current!.getBoundingClientRect();
+    return Math.round((a + Math.max(0, Math.min(1, (x - r.left) / r.width)) * (b - a)) * 100) / 100;
+  };
+  const left = (t: number) => `${((t - a) / Math.max(0.001, b - a)) * 100}%`;
+  const grab = (i: number) => (e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault(); e.stopPropagation();
+    const move = (ev: MouseEvent) => { const t = at(ev.clientX); onSfx(sfx.map((s, k) => (k === i ? { ...s, t } : s))); };
+    const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  };
+  return (
+      <div ref={el} className="relative h-6 rounded bg-slate-900 border border-slate-800"
+        onDragOver={e => { if (e.dataTransfer.types.includes(SFX_DRAG)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } }}
+        onDrop={e => {
+          const file = e.dataTransfer.getData(SFX_DRAG);
+          if (!file) return;
+          e.preventDefault();
+          onSfx([...sfx, { t: at(e.clientX), file, gain: -4 }].sort((x, y) => x.t - y.t));
+        }}
+        title="Drop a sound from the Sound FX tab · drag to move · right-click to remove">
+        {!sfx.some(s => s.t >= a && s.t <= b) && <span className="absolute inset-0 flex items-center pl-2 text-[10px] text-slate-600 pointer-events-none">Sound — drop effects here from the Sound FX tab</span>}
+        {sfx.map((s, i) => s.t >= a && s.t <= b && (
+          <span key={i} onMouseDown={grab(i)} onContextMenu={e => { e.preventDefault(); onSfx(sfx.filter((_, k) => k !== i)); }}
+            className="absolute top-0.5 bottom-0.5 px-1 rounded-sm bg-violet-600/80 hover:bg-violet-500 text-[9px] leading-[18px] text-violet-50 whitespace-nowrap cursor-grab"
+            style={{ left: left(s.t) }} title={`${names.get(s.file) ?? s.file} · ${s.t.toFixed(2)} s · ${s.gain} dB`}>
+            {names.get(s.file) ?? s.file}
+          </span>
+        ))}
+        {clockT != null && clockT >= a && clockT <= b && <span className="absolute -top-0.5 -bottom-0.5 w-0.5 bg-rose-400 pointer-events-none" style={{ left: left(clockT) }} />}
+      </div>
+  );
+}
+
+/** The playhead with a knob on top: grab it (or anywhere along the line) and drag to scrub. */
+function Playhead({ left, onGrab }: { left: string; onGrab: (e: React.MouseEvent<HTMLElement>) => void }) {
+  return (
+    <span onMouseDown={e => { e.preventDefault(); e.stopPropagation(); onGrab(e); }}
+      className="absolute -top-2 -bottom-1 w-3 -ml-1.5 z-10 flex flex-col items-center cursor-grab active:cursor-grabbing group"
+      style={{ left }} title="Drag the playhead">
+      <span className="w-3 h-2.5 shrink-0 bg-rose-400 group-hover:bg-white [clip-path:polygon(0_0,100%_0,100%_55%,50%_100%,0_55%)]" />
+      <span className="w-0.5 flex-1 bg-rose-400 group-hover:bg-white" />
+    </span>
+  );
+}
 
 /**
  * Under the canvas: the source video as one timeline, and the clip of the segment you are on.
@@ -18,7 +72,12 @@ const fmt = (s: number) => {
  * - Range: the current segment's clip, zoomed, with a handle at each end. Dragging sets that segment's
  *   own range (kept against its first slide); Reset returns it to the automatic one.
  */
-export function ClipPanel({ book, page, video, atClip, onRange, onTransport, onSeek, onSegment, onCue }: {
+export function ClipPanel({ book, page, video, atClip, onRange, onDraft, onTransport, onSeek, onSegment, onCue, sfxLib, onSfx }: {
+  /** The sound library (names), and the book's placed sound effects written back. */
+  sfxLib: SoundFx[];
+  onSfx: (next: BookSfx[]) => void;
+  /** The range while a handle is being dragged (null when released), for the Slides list to follow. */
+  onDraft: (d: { first: number; t0: number; t1: number } | null) => void;
   /** The scrubber: move the clip on screen to `t`, in every window showing it (on air too). */
   onSeek: (t: number) => void;
   book: Book;
@@ -42,6 +101,7 @@ export function ClipPanel({ book, page, video, atClip, onRange, onTransport, onS
   useEffect(() => setDraft(null), [cur?.first, book.id]);
   const range = draft ?? cur?.range ?? null;
   const draftRef = useRef(draft); draftRef.current = draft;
+  useEffect(() => { onDraft(draft && cur ? { first: cur.first, ...draft } : null); }, [draft?.t0, draft?.t1, cur?.first]);
 
   const lane = useRef<HTMLDivElement>(null);
   const win = range ? (() => {
@@ -64,7 +124,7 @@ export function ClipPanel({ book, page, video, atClip, onRange, onTransport, onS
       if (!drag.current) return;
       drag.current = null;
       const d = draftRef.current;
-      if (d && cur) onRange(book.manifest[cur.first - 1]!.id, { t0: +d.t0.toFixed(2), t1: +d.t1.toFixed(2) });
+      if (d && cur) { onRange(cur.keyId, { t0: +d.t0.toFixed(2), t1: +d.t1.toFixed(2) }); setDraft(null); }
     };
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
@@ -86,9 +146,9 @@ export function ClipPanel({ book, page, video, atClip, onRange, onTransport, onS
     s.t = t;
     if (force || performance.now() - s.last > 120) { s.last = performance.now(); onSeek(t); }
   };
-  const startScrub = (e: React.MouseEvent<HTMLElement>, a: number, b: number) => {
+  const startScrub = (e: React.MouseEvent<HTMLElement>, a: number, b: number, el: HTMLElement = e.currentTarget) => {
     if (e.button !== 0) return;
-    const s = { el: e.currentTarget, a, b, last: 0, t: 0 };
+    const s = { el, a, b, last: 0, t: 0 };
     const t = timeAt(s, e.clientX);
     if (!clock) { onCue(t); return; }
     scrubRef.current = s;
@@ -121,7 +181,7 @@ export function ClipPanel({ book, page, video, atClip, onRange, onTransport, onS
           <span className="font-mono tabular-nums text-slate-500">{(range.t1 - range.t0).toFixed(1)} s</span>
           {cur.custom && !draft && <span className="text-amber-300">own range</span>}
           {(cur.custom || draft) && (
-            <button onClick={() => { setDraft(null); onRange(book.manifest[cur.first - 1]!.id, null); }}
+            <button onClick={() => { setDraft(null); onRange(cur.keyId, null); }}
               className="px-2 py-0.5 rounded border border-slate-700 text-slate-300 hover:border-slate-500" title="Back to the automatic range: the statements, with Before / After">Reset</button>
           )}
         </>) : <span className="ml-2 text-slate-500">This slide has no clip — pick a timed card.</span>}
@@ -140,7 +200,7 @@ export function ClipPanel({ book, page, video, atClip, onRange, onTransport, onS
             title={`Segment at ${fmt(s.clip.range.t0)} — double-click to start it`} />
         ))}
         {range && <span className="absolute -top-0.5 -bottom-0.5 border border-sky-300/70 rounded pointer-events-none" style={{ left: pct(win.a), width: pct(win.b - win.a) }} />}
-        {clock && <span className="absolute -top-1 -bottom-1 w-0.5 bg-rose-400 pointer-events-none" style={{ left: pct(clock.t) }} />}
+        {clock && <Playhead left={pct(clock.t)} onGrab={e => startScrub(e, 0, duration, e.currentTarget.parentElement!)} />}
       </div>
 
       {/* The current segment's clip, zoomed, with its two handles. */}
@@ -161,9 +221,11 @@ export function ClipPanel({ book, page, video, atClip, onRange, onTransport, onS
               <span className="w-1 h-full rounded bg-sky-300 group-hover:bg-white" />
             </span>
           ))}
-          {clock && clock.t >= win.a && clock.t <= win.b && <span className="absolute -top-1 -bottom-1 w-0.5 bg-rose-400 pointer-events-none" style={{ left: pct(clock.t, win.a, win.b) }} />}
+          {clock && clock.t >= win.a && clock.t <= win.b && <Playhead left={pct(clock.t, win.a, win.b)} onGrab={e => startScrub(e, win.a, win.b, e.currentTarget.parentElement!)} />}
         </div>
       )}
+
+      <SoundLane sfx={book.styles?.sfx ?? []} lib={sfxLib} a={win.a} b={win.b} clockT={clock?.t ?? null} onSfx={onSfx} />
     </div>
   );
 }

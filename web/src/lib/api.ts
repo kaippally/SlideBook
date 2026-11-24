@@ -13,6 +13,17 @@ export async function api<T = any>(path: string, init?: RequestInit & { json?: u
   });
   const text = await r.text();
   const data = text ? JSON.parse(text) : null;
+  // An AI action that was already done: ask before calling Gemini again, then resend with `force`.
+  if (r.status === 409 && data?.already) {
+    const { askConfirm } = await import('../components/Dialog');
+    if (await askConfirm('Already done', `${data.already}${String.fromCharCode(10, 10)}Run it again? This calls Gemini again.`, { label: 'Run again' })) {
+      const body = json !== undefined && json !== null && typeof json === 'object' ? json : {};
+      return api<T>(path, { ...init, json: { ...body, force: true } });
+    }
+    const e = new Error('Cancelled');
+    e.name = 'Cancelled';
+    throw e;
+  }
   if (!r.ok) throw new Error(data?.error || `${r.status} ${r.statusText}`);
   return data as T;
 }

@@ -25,3 +25,5 @@ body {
 ::-webkit-scrollbar-track { background: transparent; }
 
 input[type='range'] { accent-color: #3b82f6; }
+.tl-scroll { scrollbar-width: none; }
+.tl-scroll::-webkit-scrollbar { display: none; }

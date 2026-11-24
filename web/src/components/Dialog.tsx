@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { api } from '../lib/api';
 
 // Every dialog answers the same two keys: Esc closes, Enter accepts (not inside a textarea).
 const stack: number[] = [];
@@ -52,19 +53,84 @@ export function notify(text: string, kind: Notice['kind'] = 'info') {
   setTimeout(() => { notices = notices.filter(x => x.id !== n.id); emit(); }, kind === 'error' ? 7000 : 3500);
 }
 
+// ── questions ─────────────────────────────────────────────────────────────────
+// askConfirm() resolves true on accept, false on cancel. Drawn by NoticeHost, so every page that mounts
+// NoticeHost can ask.
+
+type Ask = { title: string; text: string; label: string; danger: boolean; done: (ok: boolean) => void };
+let asking: Ask | null = null;
+const askSubs = new Set<(a: Ask | null) => void>();
+
+export function askConfirm(title: string, text: string, { label = 'OK', danger = false } = {}): Promise<boolean> {
+  return new Promise(resolve => {
+    asking?.done(false);
+    asking = { title, text, label, danger, done: ok => { asking = null; for (const f of askSubs) f(null); resolve(ok); } };
+    for (const f of askSubs) f(asking);
+  });
+}
+
+// ── updates ───────────────────────────────────────────────────────────────────
+// The app checks GitHub on every launch (app/updater.py). A downloaded update is offered with its change list;
+// after it is applied, the new version says once what changed.
+
+type UpdateInfo = { state: string; version: string; notes: string; current: string; applied?: { version: string; notes: string } };
+
+function UpdateNotice() {
+  const [u, setU] = useState<UpdateInfo | null>(null);
+  const [later, setLater] = useState(false);
+  useEffect(() => {
+    const load = () => void api<UpdateInfo>('/api/update').then(setU).catch(() => {});
+    load();
+    const t = window.setInterval(load, 60000);
+    return () => window.clearInterval(t);
+  }, []);
+  if (u?.applied) {
+    const close = () => { void api('/api/update/seen', { method: 'POST' }).catch(() => {}); setU({ ...u, applied: undefined }); };
+    return (
+      <Dialog title={`SlideBook updated to ${u.applied.version}`} onClose={close} onAccept={close} acceptLabel="OK" width="w-[560px]">
+        <p className="mb-2 text-slate-400">What changed:</p>
+        <div className="whitespace-pre-line">{u.applied.notes || 'No notes for this release.'}</div>
+      </Dialog>
+    );
+  }
+  if (u?.state === 'ready' && !later) {
+    return (
+      <Dialog title={`SlideBook ${u.version} is ready`} onClose={() => setLater(true)} acceptLabel="Restart and update" width="w-[560px]"
+        onAccept={() => void api('/api/update/apply', { method: 'POST' }).catch(e => notify(`Update: ${e?.message ?? e}`, 'error'))}>
+        <p className="mb-2 text-slate-400">You have {u.current}. It updates now, or by itself the next time SlideBook starts. What changed:</p>
+        <div className="whitespace-pre-line">{u.notes || 'No notes for this release.'}</div>
+      </Dialog>
+    );
+  }
+  return null;
+}
+
 export function NoticeHost() {
   const [list, setList] = useState<Notice[]>([]);
+  const [ask, setAsk] = useState<Ask | null>(asking);
   useEffect(() => { subs.add(setList); return () => { subs.delete(setList); }; }, []);
-  return createPortal(
+  useEffect(() => { askSubs.add(setAsk); return () => { askSubs.delete(setAsk); }; }, []);
+  return <>
+    <UpdateNotice />
+    {ask && (
+      <Dialog title={ask.title} onClose={() => ask.done(false)} onAccept={() => ask.done(true)} acceptLabel={ask.label} danger={ask.danger}>
+        <p className="whitespace-pre-line">{ask.text}</p>
+      </Dialog>
+    )}
+    {createPortal(
     <div className="fixed bottom-3 right-3 z-[1100] flex flex-col gap-2 items-end pointer-events-none">
       {list.map(n => (
         <div key={n.id} className={`pointer-events-auto max-w-sm px-3 py-2 rounded border text-xs shadow-lg ${n.kind === 'error' ? 'bg-rose-950/95 border-rose-800 text-rose-100' : 'bg-slate-900/95 border-slate-700 text-slate-100'}`}>{n.text}</div>
       ))}
     </div>,
     document.body,
-  );
+  )}
+  </>;
 }
 
 export async function attempt<T>(p: Promise<T>, what: string): Promise<T | undefined> {
-  try { return await p; } catch (e: any) { notify(`${what}: ${e?.message ?? e}`, 'error'); return undefined; }
+  try { return await p; } catch (e: any) {
+    if (e?.name !== 'Cancelled') notify(`${what}: ${e?.message ?? e}`, 'error');
+    return undefined;
+  }
 }

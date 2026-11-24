@@ -7,8 +7,14 @@ import type { Book, PageEntry } from './types';
  * arrow with no clip between them. `app/core.py` (`_seg_groups`) groups exactly the same way, so the
  * canvas and the output agree on when a clip plays.
  */
-export const segKey = (p: PageEntry | undefined): number | null =>
-  p && isCard(p) && p.card?.t != null ? Math.round(p.card.t) : null;
+/** A page's place on the video: a card's statement time, or the slot an image / video slide was moved into. */
+export const segTime = (p: PageEntry | undefined): number | null =>
+  !p ? null : isCard(p) ? p.card?.t ?? null : p.t ?? null;
+
+export const segKey = (p: PageEntry | undefined): number | null => {
+  const t = segTime(p);
+  return t == null ? null : Math.round(t);
+};
 
 /** The segment index of every page (0-based by page). An untimed page is a segment of its own. */
 export function segGroups(manifest: PageEntry[]): number[] {
@@ -30,7 +36,7 @@ export function segments(book: Book): Segment[] {
   const out: Segment[] = [];
   book.manifest.forEach((p, i) => {
     const g = groups[i]!;
-    if (!out[g]) out[g] = { t: p.card?.t != null && isCard(p) ? p.card.t : null, pages: [] };
+    if (!out[g]) out[g] = { t: segTime(p), pages: [] };
     out[g]!.pages.push({ p, n: i + 1 });
   });
   return out;
@@ -42,7 +48,7 @@ export function segmentSpan(book: Book, n: number): { t: number; tEnd: number } 
   const g = groups[n - 1];
   let t = Infinity, tEnd = -Infinity;
   book.manifest.forEach((p, i) => {
-    if (groups[i] !== g || p.card?.t == null) return;
+    if (groups[i] !== g || !isCard(p) || p.card?.t == null) return;
     t = Math.min(t, p.card.t);
     tEnd = Math.max(tEnd, p.card.tEnd ?? p.card.t + 8);
   });
@@ -54,6 +60,14 @@ export function segmentFirst(book: Book, n: number): number {
   const groups = segGroups(book.manifest);
   const g = groups[n - 1];
   return groups.indexOf(g!) + 1;
+}
+
+/** The segment's first timed card: what a hand-set clip range is kept against (an image moved to the front
+ *  of a segment must not orphan its range). */
+export function segmentKeyPage(book: Book, n: number): PageEntry | undefined {
+  const groups = segGroups(book.manifest);
+  const g = groups[n - 1];
+  return book.manifest.find((p, i) => groups[i] === g && isCard(p) && p.card?.t != null);
 }
 
 export const sameSegment = (book: Book, a: number, b: number) => {

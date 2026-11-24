@@ -8,12 +8,13 @@ import { getUiSetting, setUiSetting } from './lib/uiSettings';
 import { ClipPanel } from './components/ClipPanel';
 import { Inspector, type InspectorActions, type VideoActions } from './components/Inspector';
 import type { StageObject } from './components/SlideCanvas';
-import { resolveVideo, type VideoObjectStyle } from './lib/videoObject';
+import { resolveVideo, videoStyle, type VideoObjectStyle } from './lib/videoObject';
 import { SettingsDialog, type Settings } from './components/SettingsDialog';
+import { useSoundFx } from './lib/soundfx';
 import { BotDialog, botNeedsSetup, useBotStatus } from './components/BotDialog';
-import { Dialog, NoticeHost, attempt, notify } from './components/Dialog';
+import { Dialog, NoticeHost, askConfirm, attempt, notify } from './components/Dialog';
 import { api, control, subscribe, useBook, useBooks, useServerState } from './lib/api';
-import { resolveBookPage } from './lib/bookModel';
+import { fmtTime, resolveBookPage } from './lib/bookModel';
 import { resolveCardStyle } from './lib/cardStyle';
 import { aspectKey } from './components/slideCrop';
 import type { Book, BookStyles, Card, PageEntry } from './lib/types';
@@ -42,6 +43,8 @@ export function App() {
   const [stageSel, setStageSel] = useState<StageObject>('slide');
   const [leftTab, setLeftTab] = useState<'books' | 'slides'>(() => (getUiSetting('leftTab') === 'books' ? 'books' : 'slides'));
   useEffect(() => { setUiSetting('leftTab', leftTab); }, [leftTab]);
+  const [sfxLib] = useSoundFx();
+  const [rangeDraft, setRangeDraft] = useState<{ first: number; t0: number; t1: number } | null>(null);
   const [cue, setCue] = useState<{ t: number; n: number } | null>(null);
   const [replay, setReplay] = useState<{ n: number; k: number } | null>(null);
   // Edit arranges the slide and the video; Play shows the canvas as the audience will see it.
@@ -238,13 +241,33 @@ export function App() {
     },
     onNote: html => { if (current) mutateStyles(cur => ({ ...cur, notes: { ...(cur.notes ?? {}), [current.id]: html } })); },
     onBook: patch => { if (book) void attempt(api(`/api/books/${book.id}`, { method: 'PATCH', json: patch }).then(setBook), 'Save book'); },
+    onSfx: next => mutateStyles(cur => ({ ...cur, sfx: next })),
+    onSaveCardLook: () => {
+      const b = bookRef.current;
+      if (!b) return;
+      const cardLook = { card: b.styles?.card ?? null, border: b.styles?.border ?? null };
+      void attempt(api<Settings>('/api/settings', { method: 'PUT', json: { cardLook } }), 'Save card look').then(v => { if (v) { setSettings(v); notify('Card look saved as the default'); } });
+    },
+    onRecallCardLook: settings?.cardLook ? () => {
+      const d = settings.cardLook!;
+      mutateStyles(cur => ({ ...cur, card: (d.card ?? undefined) as BookStyles['card'], border: (d.border ?? undefined) as BookStyles['border'] }));
+    } : null,
     onSaveDefault: () => {
       if (!book) return;
       const s: any = {};
       for (const k of [...PRESET_KEYS, 'card'] as string[]) if ((book.styles as any)[k] !== undefined) s[k] = (book.styles as any)[k];
       void attempt(api('/api/settings', { method: 'PUT', json: { defaultStyles: s } }), 'Save default').then(v => v && notify('New books will start with this look'));
     },
-    onPlayCard: t => { if (book) void api('/api/cue', { method: 'POST', json: { bookId: book.id, t } }); },
+    // The OBS output only plays a clip on the LIVE book's goto — the old /api/cue reached the editor
+    // canvas alone, which is muted whenever the book is live.
+    onPlayCard: async p => {
+      const b = bookRef.current;
+      const n = b ? b.manifest.findIndex(x => x.id === p.id) + 1 : 0;
+      if (!b || !n) return;
+      if (!live) await control('air', b.id, n);
+      setCanvasMode('play');
+      await control('goto', b.id, n, { replay: true });
+    },
   };
 
   const hasVideo = !!book?.source?.video;
@@ -337,10 +360,36 @@ export function App() {
           </div>
           <div className="flex-1 min-h-0">
             {leftTab === 'slides' && book
-              ? <SlidesPanel book={book} view={page} live={live ? srv.live!.page : null} onGoto={goto}
+              ? <SlidesPanel book={book} rangeDraft={rangeDraft} view={page} live={live ? srv.live!.page : null} onGoto={goto}
                   onSegment={n => { setCanvasMode('play'); void control('goto', book.id, n, { replay: true }); }}
                   onJoin={(p, t) => actions.onPageCard(p, { t })} onHide={p => patchPage(p.id, { hidden: !p.hidden }, true)}
-                  onAddFiles={files => void addFiles(files)} onAddCard={k => void addCard(k)} onPaste={() => void paste()}
+                  onAddFiles={files => void addFiles(files)} onAddCard={k => void addCard(k)}
+                  onUntime={async (pages, t) => {
+                    const n = pages.length;
+                    if (!await askConfirm(`Remove the ${fmtTime(t)} time slot?`, `Its ${n} slide${n === 1 ? '' : 's'} stay${n === 1 ? 's' : ''} in the book; ${n === 1 ? 'it' : 'they'} no longer play${n === 1 ? 's' : ''} that video clip.`, { label: 'Remove time' })) return;
+                    const ranges = { ...(videoStyle(bookRef.current).ranges ?? {}) };
+                    const keyed = pages.find(p => p.card?.t != null);
+                    for (const p of pages) {
+                      if (p.card) { actions.onPageCard(p, { t: null, tEnd: null } as unknown as Partial<Card>); continue; }
+                      const b = bookRef.current;
+                      if (!b || p.t == null) continue;
+                      const next = { ...b, manifest: b.manifest.map(x => (x.id === p.id ? { ...x, t: undefined } : x)), updatedAt: Date.now() / 1000 + 5 };
+                      bookRef.current = next; setBook(next);
+                      patchPage(p.id, { t: null }, true);
+                    }
+                    if (keyed && ranges[keyed.id]) { delete ranges[keyed.id]; videoActions.onVideo({ ranges }); }
+                  }}
+                  onTime={(p, t) => actions.onPageCard(p, { t, tEnd: t + 8 })}
+                  onReorder={async (from, to, card) => {
+                    if (to !== from) {
+                      const b = await attempt(api<Book>(`/api/books/${book.id}/pages/reorder`, { method: 'POST', json: { from, to } }), 'Move slide');
+                      if (!b) return;
+                      bookRef.current = b; setBook(b);
+                    }
+                    // After the move lands, so the reorder's response cannot overwrite the new time.
+                    if (card) actions.onPageCard(card.p, { t: card.t, tEnd: card.tEnd });
+                  }}
+                  onAddVideoLink={url => void attempt(api(`/api/books/${book.id}/pages/video`, { method: 'POST', json: { url } }), 'Add video').then(r => r && notify('Fetching the video: it lands at the end of the book'))} onPaste={() => void paste()}
                   onCopy={p => copyPages([p.id])} onDelete={p => setConfirmDel([p.id])}
                   onHideMany={(pages, hidden) => {
                     const b = bookRef.current;
@@ -375,12 +424,15 @@ export function App() {
             onVideoPose={onVideoPose} onVideoSurface={onVideoSurface} selected={stageSel} onSelect={setStageSel} onVideo={videoActions.onVideo} replay={replay} mode={canvasMode} onMode={setCanvasMode}
             stop={srv.view?.bookId === book?.id && srv.view?.clip?.hold ? srv.view.clip : null}
             noClip={srv.action === 'prev'} cue={cue}
+            plain={!!srv.plain} onPlain={on => void api('/api/plain', { method: 'POST', json: { on } })}
             live={live} onToggleLive={() => book && void control(live ? 'unair' : 'air', book.id)}
             onStep={step}
           />
           {book && resolveVideo(book) && (
             <ClipPanel book={book} page={page} video={resolveVideo(book)!}
               atClip={!!(srv.view?.bookId === book.id && srv.view?.clip?.hold)}
+              onDraft={setRangeDraft}
+              sfxLib={sfxLib} onSfx={actions.onSfx}
               onRange={(id, range) => mutateVideo(v => {
                 const ranges = { ...(v.ranges ?? {}) };
                 if (range) ranges[id] = range; else delete ranges[id];

@@ -6,7 +6,7 @@ import { botSummary, type BotStatus } from './BotDialog';
 
 interface Stance { id: string; name: string; standing: string }
 interface Critique { stances: Stance[]; activeId: string; ridicule: number; temperature: number; maxResults: number; language: string; customInstruction: string }
-export interface Settings { hasGeminiKey: boolean; critique: Critique; port: number }
+export interface Settings { hasGeminiKey: boolean; critique: Critique; port: number; cardLook?: { card?: unknown; border?: unknown } | null }
 
 const LANGS = ['', 'English', 'Malayalam', 'Hindi', 'Tamil', 'Arabic', 'Urdu'];
 
@@ -15,9 +15,11 @@ export function SettingsDialog({ onClose, onSaved, bot, onBot }: { onClose: () =
   const [gemini, setGemini] = useState('');
   const [crit, setCrit] = useState<Critique | null>(null);
   const [stanceId, setStanceId] = useState('');
+  const [rules, setRules] = useState<{ text: string; default: string } | null>(null);
 
   useEffect(() => {
     api<Settings>('/api/settings').then(v => { setS(v); setCrit(v.critique); setStanceId(v.critique.activeId); });
+    api<{ text: string; default: string }>('/api/house-rules').then(setRules).catch(() => {});
   }, []);
   useEffect(() => {
     const k = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -30,6 +32,7 @@ export function SettingsDialog({ onClose, onSaved, bot, onBot }: { onClose: () =
     const body: any = { critique: { ...crit, activeId: stanceId } };
     if (gemini.trim()) body.geminiKey = gemini.trim();
     const r = await attempt(api<Settings>('/api/settings', { method: 'PUT', json: body }), 'Save settings');
+    if (rules) await attempt(api('/api/house-rules', { method: 'PUT', json: { text: rules.text === rules.default ? '' : rules.text } }), 'Save house rules');
     if (r) { setS(r); setGemini(''); onSaved(r); notify('Settings saved'); }
   };
 
@@ -82,6 +85,16 @@ export function SettingsDialog({ onClose, onSaved, bot, onBot }: { onClose: () =
               </label>
               <textarea value={crit.customInstruction} onChange={e => setCrit({ ...crit, customInstruction: e.target.value })} rows={2} placeholder="Extra instruction for every run (optional)" className={field} />
             </section>
+            {rules && (
+              <section className="col-span-2 flex flex-col gap-2">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-[11px] font-bold uppercase tracking-wider text-slate-400">House rules — Claude</h3>
+                  {rules.text !== rules.default && <button onClick={() => setRules({ ...rules, text: rules.default })} className="ml-auto text-[10px] text-slate-400 hover:text-white">Reset to draft</button>}
+                </div>
+                <p className="text-slate-400">The standing standard every Claude analysis and answer follows, for every video. Gemini only transcribes; Claude does all the thinking from the text record.</p>
+                <textarea value={rules.text} onChange={e => setRules({ ...rules, text: e.target.value })} rows={12} className={`${field} font-mono text-[11px] leading-snug`} />
+              </section>
+            )}
           </div>
         )}
         <div className="flex justify-end gap-2 px-4 py-2.5 border-t border-slate-800">

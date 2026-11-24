@@ -3,6 +3,7 @@ import { SlideLayer, type SlideLayerModel } from './SlideLayer';
 import { SlidePoseView } from './SlidePoseView';
 import { SlideObject } from './SlideObject';
 import { ClipLayer } from './ClipLayer';
+import { useBookSfx } from '../lib/bookSfx';
 import { PerspectiveGrid } from './PerspectiveGrid';
 import { cropLayout } from './slideCrop';
 import { tumbleRotation } from '../lib/tumble';
@@ -29,7 +30,10 @@ const stablePersp = (p: SlidePresentationStyle, k: number) =>
  * output plays: the two-layer step, and before a timed fact-check or fallacy card, its clip.
  */
 export function SlideCanvas({ book, page, state, onState, onPoseChange, onSurfaceChange, onVideoPose, onVideoSurface, selected, onSelect, onVideo, replay, stop, mode, onMode,
-  live, noClip, cue, onToggleLive, onStep, onEditCard }: {
+  live, noClip, cue, onToggleLive, onStep, onEditCard, plain, onPlain }: {
+  /** Slides flat and front-on — shared with the output (the server's `plain`). */
+  plain: boolean;
+  onPlain: (on: boolean) => void;
   /** Change the video object's settings (clip mode, blur) from the toolbar. */
   onVideo: (patch: Partial<VideoObjectStyle>) => void;
   /** A segment's timestamp was clicked: page `n` plays its segment clip, whatever it was stepped from. */
@@ -61,7 +65,6 @@ export function SlideCanvas({ book, page, state, onState, onPoseChange, onSurfac
   const stageRef = useRef<HTMLDivElement>(null);
   const [scale, setScale] = useState(0.4);
   const [showGrid, setShowGrid] = useState(false);
-  const [plain, setPlain] = useState(false);
   const [tween, setTween] = useState<{ ms: number; ease: number[] } | null>(null);
   const [trans, setTrans] = useState<{ out?: SlideLayerModel; in?: SlideLayerModel; key: number } | null>(null);
   const [goToken, setGoToken] = useState(-1);
@@ -134,7 +137,7 @@ export function SlideCanvas({ book, page, state, onState, onPoseChange, onSurfac
       onState('hold');
       if (enter) {
         // The card on screen leaves; the clip comes in, plays, and waits frozen at its end.
-        if (prev.stopSeq == null) setTrans({ out: layerModel(book, prev.page, token * 2, true, page < prev.page), key: token });
+        if (prev.stopSeq == null) setTrans({ out: layerModel(book, prev.page, token * 2, true, page < prev.page, live), key: token });
         else setTrans(null);
         setClipRun({ t0: stop!.t0, t1: stop!.t1, key: token, card: false, hold: true, frozen: !!stop!.frozen, seq: stop!.seq });
         return;
@@ -144,11 +147,11 @@ export function SlideCanvas({ book, page, state, onState, onPoseChange, onSurfac
       if (leave) {
         // The step after a clip: the video leaves, the card it was about comes in.
         setClipRun(c => (c ? { ...c, leave: true } : c));
-        setTrans({ in: layerModel(book, page, token * 2 + 1, false, page < prev.page), key: token });
+        setTrans({ in: layerModel(book, page, token * 2 + 1, false, page < prev.page, live), key: token });
         return;
       }
       setClipRun(null);
-      setTrans({ out: layerModel(book, prev.page, token * 2, true, page < prev.page), in: layerModel(book, page, token * 2 + 1, false, page < prev.page), key: token });
+      setTrans({ out: layerModel(book, prev.page, token * 2, true, page < prev.page, live), in: layerModel(book, page, token * 2 + 1, false, page < prev.page, live), key: token });
       const fb = setTimeout(() => setGoToken(token), 1500);
       return () => clearTimeout(fb);
     }
@@ -165,13 +168,13 @@ export function SlideCanvas({ book, page, state, onState, onPoseChange, onSurfac
     // Replaying the open card's own segment "together": the card stays up, the clip plays beside it.
     if (clip && together && prev.page === page) { setClipRun({ ...clip, key: token, card: false }); return; }
     if (clip && !together) {
-      setTrans({ out: layerModel(book, prev.page, token * 2, true, reverse), key: token });
+      setTrans({ out: layerModel(book, prev.page, token * 2, true, reverse, live), key: token });
       setClipRun({ ...clip, key: token, card: true });
       return;
     }
     // Together: the usual step, with the clip playing beside the card.
     setClipRun(clip ? { ...clip, key: token, card: false } : null);
-    setTrans({ out: layerModel(book, prev.page, token * 2, true, reverse), in: layerModel(book, page, token * 2 + 1, false, reverse), key: token });
+    setTrans({ out: layerModel(book, prev.page, token * 2, true, reverse, live), in: layerModel(book, page, token * 2 + 1, false, reverse, live), key: token });
     const p = resolveBookPage(book, page).pres;
     const fb = setTimeout(() => setGoToken(token), 1500);
     const safety = setTimeout(() => setTrans(t => (t && t.key === token ? null : t)), 3000 + Math.max(p.showDuration, p.hideDuration));
@@ -197,7 +200,7 @@ export function SlideCanvas({ book, page, state, onState, onPoseChange, onSurfac
   const onClipEnd = (run: NonNullable<typeof clipRun>) => {
     if (!book || !run.card) return;
     const token = ++tokenRef.current;
-    setTrans({ in: layerModel(book, page, token * 2 + 1), key: token });
+    setTrans({ in: layerModel(book, page, token * 2 + 1, false, false, live), key: token });
     // From here the card is the step's to show; the video only has to leave.
     setClipRun(c => (c && c.key === run.key ? { ...c, card: false } : c));
   };
@@ -260,8 +263,13 @@ export function SlideCanvas({ book, page, state, onState, onPoseChange, onSurfac
   const surfaceOn = sel === 'video' && video ? video.pageStyle.reflection : r?.pageStyle.reflection;
   const btn = (on: boolean) => `px-2.5 py-1 rounded text-[10px] font-bold uppercase tracking-wide border ${on ? 'bg-blue-600/40 text-blue-100 border-blue-400/60' : 'bg-black/55 text-slate-300 border-slate-700 hover:border-slate-500'}`;
   // The slide waits only for a clip that comes before its card; beside it ("together", a cue) it stays up.
-  const busy = !!trans || !!clipRun?.card || (!!clipRun?.hold && !clipRun.leave);
-  const videoBusy = !!trans || !!clipRun;
+  // Edit mode stops the clip on the canvas (the output on air carries on): the video object stands still
+  // on its frame, where it can be moved and tumbled.
+  const clip = play ? clipRun : null;
+  // On air the output plays them; here they are only a preview, like the clip's own sound.
+  useBookSfx(book?.styles?.sfx, !live && !!clip);
+  const busy = !!trans || !!clip?.card || (!!clip?.hold && !clip.leave);
+  const videoBusy = !!trans || !!clip;
   const hint = 'Click to select · drag: move · Ctrl+drag: tumble · Shift+wheel: depth';
 
   return (
@@ -301,11 +309,13 @@ export function SlideCanvas({ book, page, state, onState, onPoseChange, onSurfac
                       className={`px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide border-l border-slate-700 ${video.mode === 'together' ? 'bg-blue-600/60 text-white' : 'bg-black/55 text-slate-400 hover:text-white'}`}>Together</button>
                   </div>
                   {pageClip && <button onClick={() => setClipRun({ ...pageClip, key: ++tokenRef.current, card: false })} className={btn(false)} title="Play this card's clip on the canvas">▶ Clip</button>}
+                  <button onClick={() => onVideo({ hideOnPause: !video.hideOnPause })} className={btn(video.hideOnPause)}
+                    title="When the clip is paused, the video disappears until it plays again — on the canvas and on air">Hide on pause</button>
                 </div>
               )}
             </div>
             <div className="flex gap-1 ml-auto" onMouseDown={e => e.stopPropagation()}>
-              <button onClick={() => setPlain(v => !v)} className={btn(plain)} title="Read the page flat — canvas only">Plain</button>
+              <button onClick={() => onPlain(!plain)} className={btn(plain)} title="Slides flat and front-on, on the canvas and on air (the video keeps its pose)">Plain</button>
               <button onClick={() => setShowGrid(g => !g)} className={btn(showGrid)} title="Perspective grid — canvas only">Grid</button>
               <button onClick={onToggleLive}
                 className={`px-2.5 py-1 rounded text-[10px] font-bold uppercase tracking-wide border flex items-center gap-1.5 ${live ? 'bg-emerald-600/40 text-emerald-50 border-emerald-400/70' : 'bg-black/55 text-slate-300 border-slate-700 hover:border-slate-500'}`}
@@ -326,7 +336,8 @@ export function SlideCanvas({ book, page, state, onState, onPoseChange, onSurfac
             const dim = showVideo && sel === 'video' ? 0.35 : 1;
             return (<>
               <SlidePoseView
-                src={r.src} card={r.card} crop={r.crop} aspect={r.aspect} pageStyle={r.pageStyle} pose={pose}
+                src={r.src} videoSrc={r.videoSrc} videoPlaying={play && poseState === 'hold'} card={r.card} crop={r.crop} aspect={r.aspect}
+                pageStyle={r.videoSrc && live ? { ...r.pageStyle, videoVolume: 0 } : r.pageStyle} pose={pose}
                 persp={stablePersp(pres, scale)} opacity={op * dim} scale={scale} frameW={fw} frameH={fh} tween={tween}
                 zIndex={1}
                 bounceKey={`b-${poseState}`} bounceAnim={bounceAnim} bounceCss={bounceCss}
@@ -348,7 +359,8 @@ export function SlideCanvas({ book, page, state, onState, onPoseChange, onSurfac
           })()}
 
           {/* The video object, at rest on this card's opening frame. Silent: it is being placed, not played. */}
-          {video && vPose && showVideo && !videoBusy && !plain && (
+          {video && vPose && showVideo && !videoBusy && (
+
             <SlidePoseView
               src={posterUrl(video.file, pageClip?.t0 ?? 0)} videoSrc={clipSrc(video.file, pageClip?.t0 ?? 0)} videoPlaying={false}
               crop={undefined} aspect={16 / 9} pageStyle={{ ...video.pageStyle, videoVolume: 0 }} pose={vPose}
@@ -371,11 +383,11 @@ export function SlideCanvas({ book, page, state, onState, onPoseChange, onSurfac
           {trans && !plain && (
             <div key={trans.key} className="absolute inset-0 pointer-events-none">
               {trans.out && (
-                <SlideLayer model={trans.out} frameW={fw} frameH={fh} scale={scale} go={!trans.in || goToken === trans.key}
+                <SlideLayer model={trans.out} frameW={fw} frameH={fh} scale={scale} videoPlaying={play} go={!trans.in || goToken === trans.key}
                   onExited={() => setTrans(t => (t && t.key === trans.key && !t.in ? null : t))} />
               )}
               {trans.in && (
-                <SlideLayer model={trans.in} frameW={fw} frameH={fh} scale={scale} go={!trans.out || goToken === trans.key}
+                <SlideLayer model={trans.in} frameW={fw} frameH={fh} scale={scale} videoPlaying={play} go={!trans.out || goToken === trans.key}
                   onReady={() => setGoToken(trans.key)}
                   onEntered={() => setTrans(t => (t && t.key === trans.key ? null : t))} />
               )}
@@ -383,7 +395,8 @@ export function SlideCanvas({ book, page, state, onState, onPoseChange, onSurfac
           )}
 
           {/* While on air the output carries the sound; the canvas copy stays silent so it never doubles it. */}
-          {clipRun && video && !plain && (
+          {clipRun && play && video && (
+
             <div className="absolute inset-0 pointer-events-none">
               <ClipLayer key={clipRun.key} video={video} t0={clipRun.t0} t1={clipRun.t1} volume={live ? 0 : video.volume / 100}
                 frameW={fw} frameH={fh} scale={scale} hold={clipRun.hold} frozen={clipRun.frozen} leave={clipRun.leave}
@@ -394,9 +407,10 @@ export function SlideCanvas({ book, page, state, onState, onPoseChange, onSurfac
             </div>
           )}
 
-          {r && plain && (
+          {r && plain && !busy && (
+
             <div className="absolute inset-0 flex items-center justify-center">
-              <SlideObject key={`${book?.id}-${page}`} src={r.src} card={r.card} crop={r.crop} aspect={r.aspect} frameW={fw} frameH={fh}
+              <SlideObject key={`${book?.id}-${page}`} src={r.src} videoSrc={r.videoSrc} videoPlaying={play} card={r.card} crop={r.crop} aspect={r.aspect} frameW={fw} frameH={fh}
                 page={{ ...r.pageStyle, reflection: false, thickness: 0, shadowBlur: 0, shadowX: 0, shadowY: 0 }} thickness={0} scale={scale} />
             </div>
           )}

@@ -30,6 +30,7 @@ export function pageAspect(book: Book, p: PageEntry | undefined): number {
 export interface ResolvedPage {
   entry: PageEntry | undefined;
   src: string;
+  videoSrc?: string;
   card?: SlideCard;
   crop: SlideCrop | undefined;
   aspect: number;
@@ -59,14 +60,15 @@ export function resolveBookPage(book: Book, n: number): ResolvedPage {
     ? { kind: entry!.kind as CardKind, card: entry!.card, style: resolveCardStyle(styles.card) }
     : undefined;
   return {
-    entry, src: pageSrc(entry), card, crop, aspect, pageStyle, rawPres, pres,
+    entry, src: pageSrc(entry), videoSrc: entry?.kind === 'video' && entry.video ? `/media/${entry.video}` : undefined, card, crop, aspect, pageStyle, rawPres, pres,
     heading: text ? { text, style: resolveHeadingStyle(styles.heading) } : null,
   };
 }
 
-export function layerModel(book: Book, n: number, key: number, exiting = false, reverse = false): SlideLayerModel {
+/** `muted`: a video slide plays silent (the canvas while the output is on air carries the sound). */
+export function layerModel(book: Book, n: number, key: number, exiting = false, reverse = false, muted = false): SlideLayerModel {
   const r = resolveBookPage(book, n);
-  return { key, src: r.src, card: r.card, crop: r.crop, aspect: r.aspect, pageStyle: r.pageStyle, pres: r.pres, heading: r.heading, exiting, reverse };
+  return { key, src: r.src, videoSrc: r.videoSrc, card: r.card, crop: r.crop, aspect: r.aspect, pageStyle: muted ? { ...r.pageStyle, videoVolume: 0 } : r.pageStyle, pres: r.pres, heading: r.heading, exiting, reverse };
 }
 
 export function bookSound(book: Book) {

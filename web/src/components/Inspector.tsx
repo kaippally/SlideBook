@@ -9,14 +9,15 @@ import { containPct, resolveCardStyle, VERDICTS, type CardStyle } from '../lib/c
 import { KIND_VERDICTS, VERDICT_WORD } from '../lib/cardKinds';
 import { DEFAULT_COUNTER, type CounterStyle } from '../lib/counter';
 import { fmtTime, isCard, resolveBookPage } from '../lib/bookModel';
-import type { Book, Card, PageEntry } from '../lib/types';
+import type { Book, BookSfx, Card, PageEntry } from '../lib/types';
+import { SfxTab } from './SfxTab';
 import { resolveVideo, videoStyle, type ClipMode, type VideoObjectStyle } from '../lib/videoObject';
 import {
   headingForPage, resolveBorder, resolveSurface, type SlideBorder, type PoseLockKey, type PresPose, type SlideAlign, type SlideHeadingStyle,
   type SlidePageHeading, type SlidePageStyle, type SlidePresentationStyle, type SlideState, type SlideSurface,
 } from './slideStyles';
 
-type Tab = 'card' | 'cardStyle' | 'motion' | 'look' | 'notes' | 'book' | 'video';
+type Tab = 'card' | 'cardStyle' | 'motion' | 'look' | 'notes' | 'book' | 'video' | 'sfx';
 
 export interface InspectorActions {
   onCard: (patch: Partial<Card>, kind?: 'claim' | 'fallacy') => void;
@@ -39,7 +40,11 @@ export interface InspectorActions {
   onBook: (patch: { title?: string; cardAspect?: number }) => void;
   onCounter: (patch: Partial<CounterStyle>) => void;
   onSaveDefault: () => void;
-  onPlayCard: (t: number) => void;
+  /** The Card look tab (card style + border) saved as the default, and put back on this book. */
+  onSaveCardLook: () => void;
+  onSfx: (next: BookSfx[]) => void;
+  onRecallCardLook: (() => void) | null;
+  onPlayCard: (p: PageEntry) => void;
 }
 
 export interface VideoActions {
@@ -53,16 +58,16 @@ export interface VideoActions {
 }
 
 // With the video object selected on the canvas, the inspector edits it instead of the slide.
-const VIDEO_TABS: { id: Tab; label: string }[] = [{ id: 'video', label: 'Video' }, { id: 'motion', label: 'Motion' }, { id: 'look', label: 'Surface' }];
+const VIDEO_TABS: { id: Tab; label: string }[] = [{ id: 'video', label: 'Video' }, { id: 'motion', label: 'Motion' }, { id: 'look', label: 'Surface' }, { id: 'sfx', label: 'Sound FX' }];
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'card', label: 'Card' }, { id: 'cardStyle', label: 'Card look' }, { id: 'motion', label: 'Motion' },
-  { id: 'look', label: 'Surface' }, { id: 'notes', label: 'Notes' }, { id: 'book', label: 'Book' },
+  { id: 'look', label: 'Surface' }, { id: 'notes', label: 'Notes' }, { id: 'sfx', label: 'Sound FX' }, { id: 'book', label: 'Book' },
 ];
 
 const TITLE_LABEL: Record<string, string> = { claim: 'Claim', fallacy: 'Fallacy name', qa: 'The question', moderation: 'Summary', contradiction: 'What they say now', scorecard: 'Heading' };
 
-function CardEditor({ page, onCard, onPlay, hasVideo, videoId }: { page: PageEntry; onCard: InspectorActions['onCard']; onPlay: (t: number) => void; hasVideo: boolean; videoId?: string | null }) {
+function CardEditor({ page, onCard, onPlay, hasVideo, videoId }: { page: PageEntry; onCard: InspectorActions['onCard']; onPlay: (p: PageEntry) => void; hasVideo: boolean; videoId?: string | null }) {
   const c = page.card!;
   const [sources, setSources] = useState(() => (c.sources ?? []).map(s => (s.note ? `${s.label} — ${s.note}` : s.label)).join('\n'));
   return (
@@ -144,14 +149,15 @@ function CardEditor({ page, onCard, onPlay, hasVideo, videoId }: { page: PageEnt
             ? <a href={`https://youtu.be/${videoId}?t=${Math.floor(c.t)}`} target="_blank" rel="noreferrer" title="Open the original on YouTube at this moment"
                 className="font-mono text-sky-300 underline hover:text-sky-200">{fmtTime(c.t)}–{fmtTime(c.tEnd)}</a>
             : <span className="font-mono text-slate-200">{fmtTime(c.t)}–{fmtTime(c.tEnd)}</span>}</span>
-          {hasVideo && <button onClick={() => onPlay(c.t!)} className={BTN_OFF}>▶ Play on canvas</button>}
+          {hasVideo && <button onClick={() => onPlay(page)} className={BTN_OFF} title="Put this book on air (if it is not) and play this card's clip in the OBS output, with its audio">▶ Play on OBS</button>}
         </div>
       )}
     </div>
   );
 }
 
-function CardStyleEditor({ s, onChange, aspect, border, onBorder }: {
+function CardStyleEditor({ s, onChange, aspect, border, onBorder, onSaveLook, onRecallLook }: {
+  onSaveLook: () => void; onRecallLook: (() => void) | null;
   s: CardStyle; onChange: (p: Partial<CardStyle>) => void; aspect: number; border: SlideBorder; onBorder: (p: Partial<SlideBorder>) => void;
 }) {
   const start = containPct(aspect);
@@ -163,6 +169,11 @@ function CardStyleEditor({ s, onChange, aspect, border, onBorder }: {
   return (
     <SectionColumns.Provider value={false}>
       <Group title="Card look" scope="every card in this book">
+        <div className="flex gap-1.5 px-3 pt-2">
+          <button onClick={onSaveLook} className={BTN_OFF} title="Save everything on this tab — size, border, type, box, content, colours — as the default">Save as default</button>
+          <button onClick={onRecallLook ?? undefined} disabled={!onRecallLook} className={`${BTN_OFF} disabled:opacity-40`}
+            title={onRecallLook ? 'Put the saved default card look on this book' : 'Nothing saved yet — use Save as default first'}>Default</button>
+        </div>
         <Section title="Size" actions={s.width ? <button onClick={() => onChange({ width: undefined, height: undefined })} className={BTN_OFF} title="Back to the card shape, as large as fits">Reset</button> : undefined}>
           <Slider label="Width" value={w} min={20} max={100} suffix="%" onChange={width => onChange({ width, height: h })} />
           <Slider label="Height" value={h} min={15} max={100} suffix="%" onChange={height => onChange({ width: w, height })} />
@@ -293,7 +304,8 @@ export function Inspector({ book, page, state, onState, a, hasVideo, stage, va, 
         {book && !isVideo && tab === 'card' && (entry && isCard(entry) && entry.card
           ? <CardEditor key={entry.id} page={entry} onCard={a.onCard} onPlay={a.onPlayCard} hasVideo={hasVideo} videoId={book?.source?.videoId} />
           : <div className="p-4 text-[11px] text-slate-500">{entry ? 'This page is a picture — pick a claim or fallacy page to edit its text.' : 'No page selected.'}</div>)}
-        {book && !isVideo && tab === 'cardStyle' && <CardStyleEditor s={resolveCardStyle(styles.card)} onChange={a.onCardStyle} aspect={book.cardAspect} border={resolveBorder(styles.border)} onBorder={a.onBorder} />}
+        {book && tab === 'sfx' && <SfxTab sfx={styles.sfx ?? []} onSfx={a.onSfx} />}
+        {book && !isVideo && tab === 'cardStyle' && <CardStyleEditor s={resolveCardStyle(styles.card)} onChange={a.onCardStyle} aspect={book.cardAspect} border={resolveBorder(styles.border)} onBorder={a.onBorder} onSaveLook={a.onSaveCardLook} onRecallLook={a.onRecallCardLook} />}
         {book && !isVideo && tab === 'motion' && (
           <SlideAnimationPanel
             deckLabel={book.title} pageNum={entry ? page : null} pageId={entry?.id ?? null} state={state}

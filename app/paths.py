@@ -17,10 +17,12 @@ DATA = BASE / 'data'
 MEDIA = DATA / 'media'
 FONTS = BASE / 'fonts' if (BASE / 'fonts').exists() else HERE / 'fonts'
 TOOLS = BASE / 'tools'
+SFX = BASE / 'sfx'
+USER_SFX = DATA / 'sfx'
 DB_FILE = DATA / 'slidebook.db'
 PORT = 8780
 
-for d in (DATA, MEDIA / 'images', MEDIA / 'audio', DATA / 'work'):
+for d in (DATA, MEDIA / 'images', MEDIA / 'audio', DATA / 'work', USER_SFX):
     d.mkdir(parents=True, exist_ok=True)
 
 

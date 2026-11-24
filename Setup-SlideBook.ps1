@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
   SlideBook setup. Per-user install, no admin needed.
     .\Setup-SlideBook.ps1                 install / update
@@ -18,10 +18,21 @@ $ErrorActionPreference = 'Stop'
 $Src = $PSScriptRoot
 $StartMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\SlideBook.lnk'
 $Desktop = Join-Path ([Environment]::GetFolderPath('Desktop')) 'SlideBook.lnk'
+$StartMenuVideos = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\SlideBook Videos.lnk'
+$DesktopVideos = Join-Path ([Environment]::GetFolderPath('Desktop')) 'SlideBook Videos.lnk'
 $UninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\SlideBook'
+
+$Credit = @(
+  'SlideBook is built by Nishad Kaippally (KaippsCafe@gmail.com)',
+  'and given away free, so content creators are never charged for making shorts.'
+)
 
 function Step($m) { Write-Host "==> $m" -ForegroundColor Cyan }
 function Warn($m) { Write-Host "    $m" -ForegroundColor Yellow }
+
+Write-Host ''
+$Credit | ForEach-Object { Write-Host "  $_" -ForegroundColor Magenta }
+Write-Host ''
 
 function Stop-SlideBook {
   Get-Process SlideBook -ErrorAction SilentlyContinue | Stop-Process -Force
@@ -31,7 +42,7 @@ function Stop-SlideBook {
 if ($Uninstall) {
   Step "Uninstalling SlideBook from $InstallDir"
   Stop-SlideBook
-  Remove-Item $StartMenu, $Desktop -ErrorAction SilentlyContinue
+  Remove-Item $StartMenu, $Desktop, $StartMenuVideos, $DesktopVideos -ErrorAction SilentlyContinue
   Remove-Item $UninstallKey -Recurse -ErrorAction SilentlyContinue
   if (Test-Path $InstallDir) {
     $data = Join-Path $InstallDir 'data'
@@ -102,7 +113,7 @@ Stop-SlideBook
 New-Item -ItemType Directory -Force $InstallDir | Out-Null
 Copy-Item (Join-Path $Src 'SlideBook.exe') $InstallDir -Force
 Copy-Item (Join-Path $Src 'fonts') $InstallDir -Recurse -Force
-foreach ($opt in 'obs', 'tools', 'README.md') {
+foreach ($opt in 'SlideBookVideos.exe', 'sfx', 'obs', 'tools', 'README.md') {
   $p = Join-Path $Src $opt
   if (Test-Path $p) { Copy-Item $p $InstallDir -Recurse -Force }
 }
@@ -132,10 +143,16 @@ if ($GeminiKey) {
 Step 'Creating shortcuts'
 $exe = Join-Path $InstallDir 'SlideBook.exe'
 $shell = New-Object -ComObject WScript.Shell
-$links = @($StartMenu); if (-not $NoDesktopShortcut) { $links += $Desktop }
+$videos = Join-Path $InstallDir 'SlideBookVideos.exe'
+$links = @(, @($StartMenu, $exe))
+if (Test-Path $videos) { $links += , @($StartMenuVideos, $videos) }
+if (-not $NoDesktopShortcut) {
+  $links += , @($Desktop, $exe)
+  if (Test-Path $videos) { $links += , @($DesktopVideos, $videos) }
+}
 foreach ($l in $links) {
-  $s = $shell.CreateShortcut($l)
-  $s.TargetPath = $exe
+  $s = $shell.CreateShortcut($l[0])
+  $s.TargetPath = $l[1]
   $s.WorkingDirectory = $InstallDir
   $s.IconLocation = "$exe,0"
   $s.Save()
@@ -145,7 +162,8 @@ $version = '0.0.0'
 try { $version = (Get-Item $exe).VersionInfo.ProductVersion; if (-not $version) { $version = '0.1.0' } } catch {}
 New-Item $UninstallKey -Force | Out-Null
 $u = "`"$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe`" -NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $InstallDir 'Setup-SlideBook.ps1')`" -Uninstall -InstallDir `"$InstallDir`""
-@{ DisplayName = 'SlideBook'; DisplayVersion = $version; Publisher = 'Kaipps'; InstallLocation = $InstallDir
+@{ DisplayName = 'SlideBook'; DisplayVersion = $version; Publisher = 'Nishad Kaippally'; Contact = 'KaippsCafe@gmail.com'
+   Comments = ($Credit -join ' '); InstallLocation = $InstallDir
    DisplayIcon = $exe; UninstallString = $u; NoModify = 1; NoRepair = 1 }.GetEnumerator() | ForEach-Object {
   $type = if ($_.Value -is [int]) { 'DWord' } else { 'String' }
   New-ItemProperty $UninstallKey -Name $_.Key -Value $_.Value -PropertyType $type -Force | Out-Null
@@ -153,6 +171,7 @@ $u = "`"$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe`" -NoProf
 
 Write-Host ''
 Write-Host "SlideBook installed: $exe" -ForegroundColor Green
+$Credit | ForEach-Object { Write-Host "  $_" -ForegroundColor Magenta }
 '  OBS: Browser Source 1920x1080 -> http://127.0.0.1:8780/output'
 "  OBS hotkeys: Tools -> Scripts -> + -> $(Join-Path $InstallDir 'obs\slidebook-keys.lua')"
 if (-not $GeminiKey -and -not [Environment]::GetEnvironmentVariable('GEMINI_API_KEY', 'User')) {

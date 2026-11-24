@@ -2,6 +2,7 @@
 
 A job carries `options.notify = {chatId, messageId}`; every change of its step is POSTed to the bot's
 event server, which edits that one message. The bot being down costs nothing but the update."""
+import json
 import logging
 import os
 
@@ -31,7 +32,21 @@ async def on_broadcast(msg):
         import db
         b = db.get_book(job['book_id'])
         if b:
-            event.update(title=b['title'], pages=b['pageCount'])
+            event.update(title=b['title'], pages=b['pageCount'], recordId=b['source'].get('recordId'), runId=b['source'].get('runId'))
+    await post(event)
+
+
+def post_sync(event):
+    """The same POST from a worker thread (the analysis job runs off the event loop)."""
+    import urllib.request
+    try:
+        req = urllib.request.Request(BOT_EVENT_URL, data=json.dumps(event).encode(), headers={'Content-Type': 'application/json'})
+        urllib.request.urlopen(req, timeout=5).close()
+    except Exception as e:
+        log.info('bot event not delivered: %s', e)
+
+
+async def post(event):
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as s:
             await s.post(BOT_EVENT_URL, json=event)

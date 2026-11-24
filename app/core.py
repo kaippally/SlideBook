@@ -43,6 +43,8 @@ def book_changed(book_id):
 # ── live / preview cursor ─────────────────────────────────────────────────────
 
 state = {'view': db.get_setting('view'), 'live': db.get_setting('live')}
+# Plain: slides drawn flat and front-on, on the canvas AND on air (the video object keeps its pose).
+plain = bool(db.get_setting('plain'))
 for _k in ('view', 'live'):
     if state[_k]:
         state[_k].pop('clip', None)
@@ -93,11 +95,20 @@ def warm_posters(book_id):
         spec = _clip_span(book, groups.index(g) + 1)
         if spec:
             poster_file(name, spec['t0'])
+            poster_file(name, _play_span(book, groups.index(g) + 1)['t0'])
             poster_file(name, max(spec['t0'], spec['t1'] - 0.35))
 
 
+def seg_time(p):
+    """A page's place on the video: a card's statement time, or the time slot an image / video slide was
+    moved into (`t`, set when it is moved next to a timed slide). None = untimed, a segment of its own."""
+    if not p:
+        return None
+    return (p.get('card') or {}).get('t') if p.get('kind') in db.CARD_KINDS else p.get('t')
+
+
 def _seg_key(p):
-    t = (p.get('card') or {}).get('t') if p.get('kind') in db.CARD_KINDS else None
+    t = seg_time(p)
     return None if t is None else round(float(t))
 
 
@@ -129,7 +140,7 @@ def _clip_for(book, page, came_from=None):
     groups = _seg_groups(book['manifest'])
     if came_from and 0 < came_from <= len(groups) and groups[came_from - 1] == groups[page - 1]:
         return None
-    return _clip_span(book, page)
+    return _play_span(book, page)
 
 
 def _clip_span(book, page):
@@ -137,17 +148,18 @@ def _clip_span(book, page):
     no longer than `maxLen`. None when the page has no timed card or the book no video."""
     cfg = _video_cfg(book)
     manifest = book['manifest']
-    entry = manifest[page - 1] if 0 < page <= len(manifest) else {}
-    card = entry.get('card') or {}
-    if not cfg['on'] or entry.get('kind') not in db.CARD_KINDS or card.get('t') is None or not (book.get('source') or {}).get('video'):
+    if not cfg['on'] or not 0 < page <= len(manifest) or not (book.get('source') or {}).get('video'):
         return None
     groups = _seg_groups(manifest)
-    # A range set by hand on the clip timeline, kept against the segment's first page, wins.
-    first = groups.index(groups[page - 1])
-    own = (cfg.get('ranges') or {}).get(manifest[first]['id'])
+    timed = [p for i, p in enumerate(manifest) if groups[i] == groups[page - 1]
+             and p.get('kind') in db.CARD_KINDS and (p.get('card') or {}).get('t') is not None]
+    if not timed:
+        return None
+    # A range set by hand on the clip timeline, kept against the segment's first timed card, wins.
+    own = (cfg.get('ranges') or {}).get(timed[0]['id'])
     if own and own.get('t1', 0) > own.get('t0', 0):
         return {'t0': float(own['t0']), 't1': float(own['t1'])}
-    cards = [p['card'] for i, p in enumerate(manifest) if groups[i] == groups[page - 1] and (p.get('card') or {}).get('t') is not None]
+    cards = [p['card'] for p in timed]
     t = min(float(c['t']) for c in cards)
     end = max(float(c.get('tEnd') or float(c['t']) + 8) for c in cards)
     t0, t1 = max(0.0, t - float(cfg['pre'])), end + float(cfg['post'])
@@ -155,6 +167,25 @@ def _clip_span(book, page):
     if float(cfg.get('maxLen') or 0) > 0:
         t1 = min(t1, t0 + float(cfg['maxLen']))
     return {'t0': t0, 't1': t1}
+
+
+def _play_span(book, page):
+    """What a step to `page` plays: its segment's clip, started early enough to run through every hidden
+    segment just before it — a hidden segment's slides are skipped, its video is not. Mirrors playRange."""
+    spec = _clip_span(book, page)
+    if not spec:
+        return None
+    manifest, groups = book['manifest'], _seg_groups(book['manifest'])
+    first = groups.index(groups[page - 1])
+    while first > 0:
+        prev = groups.index(groups[first - 1])
+        pages = [p for i, p in enumerate(manifest) if groups[i] == groups[prev]]
+        own = _clip_span(book, prev + 1) if all(p.get('hidden') for p in pages) else None
+        if not own:
+            break
+        spec = {**spec, 't0': min(spec['t0'], own['t0'])}
+        first = prev
+    return spec
 
 
 async def refresh_clip(book_id):
@@ -168,7 +199,7 @@ async def refresh_clip(book_id):
         clip = (cur or {}).get('clip') or {}
         if not cur or cur['bookId'] != book_id or not clip.get('hold'):
             continue
-        spec = _clip_span(book, cur['page'])
+        spec = _play_span(book, cur['page'])
         if not spec or (abs(spec['t0'] - clip['t0']) < 0.05 and abs(spec['t1'] - clip['t1']) < 0.05):
             continue
         cur['clip'] = {**clip, **spec}
@@ -199,7 +230,7 @@ def _visible(book):
 
 
 def snapshot(extra=None):
-    return {'type': 'state', 'view': state['view'], 'live': state['live'], **(extra or {})}
+    return {'type': 'state', 'view': state['view'], 'live': state['live'], 'plain': plain, **(extra or {})}
 
 
 async def control(action, book_id=None, page=None, on_air=False, replay=False, edit=False):
@@ -265,7 +296,7 @@ async def control(action, book_id=None, page=None, on_air=False, replay=False, e
                     nxt, stop = cur, {'frozen': True}   # back onto this segment's clip — not played again
                 else:
                     nxt = prv or cur
-        spec = _clip_span(book, nxt) if stop else None
+        spec = _play_span(book, nxt) if stop else None
         if nxt == cur and action != 'goto' and bool(spec) == at_clip:
             return snapshot()
         reverse = nxt < cur
@@ -374,6 +405,30 @@ def gc_media():
     return gone
 
 
+VIDEO_EXTS = ('.mp4', '.webm', '.mov', '.mkv', '.m4v')
+
+
+def video_page(path, label):
+    """A video slide: the file under media/video plays in the slide's box; `ref` is its opening frame,
+    so thumbnails, the page strip and the entrance (held until the poster decodes) work as for an image."""
+    out = DATA / 'work' / f'poster-{time.time_ns()}.jpg'
+    out.parent.mkdir(parents=True, exist_ok=True)
+    flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+    for t in ('0.5', '0'):
+        subprocess.run([tool('ffmpeg'), '-y', '-loglevel', 'error', '-ss', t, '-i', str(path), '-frames:v', '1',
+                        '-vf', 'scale=1280:-2', '-q:v', '3', str(out)], capture_output=True, timeout=60, creationflags=flags)
+        if out.is_file() and out.stat().st_size:
+            break
+    if not out.is_file():
+        raise analysis.AnalysisError(f'Could not read a frame from {Path(path).name}.')
+    try:
+        ref, aspect = write_image(out.read_bytes(), 'jpg')
+    finally:
+        out.unlink(missing_ok=True)
+    return {'id': db.new_id('vid-'), 'kind': 'video', 'ref': ref, 'aspect': aspect,
+            'video': f'video/{Path(path).name}', 'label': str(label)[:60]}
+
+
 def insert_pages(manifest, pages, after=None):
     at = len(manifest) if after is None else max(0, min(len(manifest), after))
     return manifest[:at] + pages + manifest[at:]
@@ -392,12 +447,61 @@ def brief(opts):
     return '\n'.join(p for p in parts if p)
 
 
+FULL_EXAMINE = ['claims', 'fallacies', 'answers', 'moderation', 'tally', 'contradictions']
+
+
+def video_key(url):
+    """One name for a video across every link to it: the YouTube id, else the link without its query."""
+    vid = analysis.youtube_id(url)
+    return f'yt:{vid}' if vid else url.split('?')[0].rstrip('/')
+
+
+def _stance_line(stance):
+    # The house rules already carry the rationalist standard; another stance picked for this link is added to the brief.
+    return stance.get('standing', '') if stance.get('id') not in ('neutral', 'rationalist') else ''
+
+
+def _claude_cards(rec, brief_text, language, examine, base=None, max_claims=25, progress=None):
+    import reasoning
+    if progress:
+        progress(f'Claude is analysing record v{rec["version"]} ({language})' + (f' — refining v{base["version"]}' if base else ''))
+    res = reasoning.analyse(rec, brief_text, language=language, examine=examine, base=base, max_claims=max_claims)
+    cards = analysis.build_debate_cards(res, rec['lines'], examine)
+    run = db.add_run(rec['vkey'], rec['id'], 'analyse', brief_text, res['model'], res['raw'],
+                     {**res['usage'], 'cost': res['cost'], 'examine': examine, 'language': language},
+                     base_run=base['id'] if base else None)
+    return res, cards, run
+
+
+def _reanalyse_job(opts, crit, progress):
+    """A fresh Claude pass over a saved record — no download, no transcription."""
+    rec = db.get_record(int(opts['recordId']))
+    if not rec:
+        raise analysis.AnalysisError('That record no longer exists.')
+    base = db.get_run(int(opts['baseRun'])) if opts.get('baseRun') else None
+    prev = db.list_runs(rec['vkey'], 'analyse')
+    last_usage = (base or (prev[0] if prev else None) or {}).get('usage') or {}
+    examine = opts.get('examine') or last_usage.get('examine') or (FULL_EXAMINE if rec['kind'] == 'debate' else ['claims', 'fallacies'])
+    language = opts.get('language') or last_usage.get('language') or analysis.lang_for(crit.get('language'), rec['lang'])
+    res, cards, run = _claude_cards(rec, opts.get('prompt', ''), language, examine, base=base,
+                                    max_claims=int(crit.get('maxResults') or 25), progress=progress)
+    vid = analysis.youtube_id(rec['url'])
+    source = {'url': rec['url'], 'title': f'{rec["title"] or rec["url"]} — v{run["version"]}', 'duration': rec['duration'],
+              'videoId': vid, 'start': 0, 'platform': 'youtube' if vid else 'other', 'video': rec['video'],
+              'lines': rec['lines'], 'langCode': rec['lang'], 'transcriptVia': rec['via'], 'speakers': rec['speakers'],
+              'recordId': rec['id'], 'runId': run['id'], 'analysedAt': time.time(), 'model': res['model'], 'language': language,
+              'claims': len(res['claims']), 'fallacies': len(res['fallacies']), 'exchanges': len(res['exchanges'])}
+    return source, cards
+
+
 def process_job(job, progress):
     url = job['url']
     opts = job['options']
     crit = analysis.critique()
     stance = next((s for s in crit['stances'] if s['id'] == (opts.get('stanceId') or crit['activeId'])), crit['stances'][0])
 
+    if opts.get('recordId'):
+        return _reanalyse_job(opts, crit, progress)
     if opts.get('video'):
         return _process_range_job(opts, crit, stance, progress)
     progress('Reading the link')
@@ -405,6 +509,20 @@ def process_job(job, progress):
     vid = analysis.youtube_id(url)
     source = {'url': url, 'title': meta['title'], 'uploader': meta['uploader'], 'duration': meta['duration'],
               'videoId': vid, 'start': analysis.youtube_start(url) if vid else 0, 'platform': 'youtube' if vid else 'other'}
+    debate = opts.get('kind') in ('debate', 'panel')
+
+    # The record is the one transcription of this video. A debate needs a speaker-labelled one; a speaker-
+    # labelled record serves a plain analysis too.
+    rec = db.latest_record(video_key(url))
+    if rec and (rec['kind'] == 'debate' or not debate):
+        progress(f'Using the saved record v{rec["version"]} — no new transcription')
+        if rec['video'] and (MEDIA / rec['video'][len('/media/'):]).exists():
+            source['video'] = rec['video']
+        else:
+            progress('Downloading the video')
+            source['video'] = f'/media/video/{analysis.download_media(url, f"job{job["id"]}").name}'
+        return _analyse_record(rec, source, opts, crit, stance, debate, progress)
+    rec = None
 
     tr = None
     if vid:
@@ -416,15 +534,26 @@ def process_job(job, progress):
     debate = opts.get('kind') in ('debate', 'panel')
     if debate:
         tr = None   # captions carry no speakers: a debate is always transcribed by ear
+    # A video already in the library with its whole transcript is reused as it is — a plain transcript
+    # carries no speakers, so a debate still needs its own.
+    import videos   # videos imports core
+    known = None if debate else videos.transcribed(url)
+    if known:
+        progress('Already transcribed — reusing the library copy')
+        tr = db.get_video(known['id'], full=True)['transcript']
     # A finished transcription is kept with the job, so a retry after a failed analysis does not pay
     # for (or wait on) the transcription again.
     tr_cache = DATA / 'work' / f'job{job["id"]}-{"debate" if debate else "plain"}.transcript.json'
     if not tr and tr_cache.exists():
         tr = json.loads(tr_cache.read_text(encoding='utf-8'))
     # The video is always fetched: the canvas plays the clip before each fact-check and fallacy card.
-    progress('Downloading the video')
-    path = analysis.download_media(url, f'job{job["id"]}')
-    source['video'] = f'/media/video/{path.name}'
+    if known:
+        path = videos._file(known)
+        source['video'] = known['video']
+    else:
+        progress('Downloading the video')
+        path = analysis.download_media(url, f'job{job["id"]}')
+        source['video'] = f'/media/video/{path.name}'
     if not tr:
         progress('Transcribing who said what' if debate else 'Transcribing with Gemini')
         who = ' '.join(p for p in (opts.get('speakers'), opts.get('context') and f"(background: {opts['context']})") if p)
@@ -436,30 +565,25 @@ def process_job(job, progress):
         # Gemini's clock can run a little past the end of the final part; the recording's own length wins.
         for l in tr['lines']:
             l['t'] = min(l['t'], max(0, source['duration'] - 1))
-    source.update(lines=tr['lines'], langCode=tr['langCode'], transcriptVia=tr['via'], generated=tr['generated'])
+    speakers = tr.get('speakers') or sorted({l.get('speaker') for l in tr['lines'] if l.get('speaker')})
+    rec = db.save_record(video_key(url), 'debate' if debate else 'plain', url, meta['title'], meta['duration'] or 0,
+                         source['video'], tr['lines'], speakers, tr.get('langCode') or '', tr.get('via') or '')
+    if opts.get('notify') and speakers:
+        import relay
+        relay.post_sync({'type': 'slidebook-record', **opts['notify'], 'recordId': rec['id'], 'title': rec['title'],
+                         'speakers': speakers, 'url': url})
+    return _analyse_record(rec, source, opts, crit, stance, debate, progress)
 
-    language = analysis.lang_for(opts.get('language') or crit.get('language'), tr['langCode'])
-    if debate:
-        source['speakers'] = tr.get('speakers') or sorted({l.get('speaker') for l in tr['lines'] if l.get('speaker')})
-        progress(f'Examining the exchanges ({language})')
-        res = analysis.analyse_debate(
-            [{'ts': int(l['t'] * 1000), 'text': l['text'], 'speaker': l.get('speaker')} for l in tr['lines']],
-            language=language, examine=opts.get('examine') or [], standing_instructions=stance.get('standing', ''),
-            custom_instruction=brief(opts), temperature=float(crit.get('temperature', 0.3)),
-            max_claims=int(crit.get('maxResults') or 25))
-        cards = analysis.build_debate_cards(res, tr['lines'], opts.get('examine') or [])
-        source.update(analysedAt=time.time(), model=res['model'], language=language, stance=stance['name'], kind=opts['kind'],
-                      claims=len(res['claims']), fallacies=len(res['fallacies']), exchanges=len(res['exchanges']))
-        return source, cards
-    progress(f'Fact-checking ({language})')
-    res = analysis.analyse_transcript(
-        [{'ts': int(l['t'] * 1000), 'text': l['text']} for l in tr['lines']],
-        language=language, temperature=float(crit.get('temperature', 0.3)), ridicule=float(crit.get('ridicule', 0)),
-        max_results=int(crit.get('maxResults') or 0), custom_instruction=brief(opts) or crit.get('customInstruction', ''),
-        standing_instructions=stance.get('standing', ''))
-    cards = analysis.build_cards(res, tr['lines'])
-    source.update(analysedAt=time.time(), model=res['model'], language=language, stance=stance['name'],
-                  claims=len(res['claims']), fallacies=len(res['fallacies']))
+
+def _analyse_record(rec, source, opts, crit, stance, debate, progress):
+    language = analysis.lang_for(opts.get('language') or crit.get('language'), rec['lang'])
+    examine = (opts.get('examine') or FULL_EXAMINE) if debate else ['claims', 'fallacies']
+    brief_text = '\n'.join(p for p in (brief(opts), _stance_line(stance)) if p)
+    res, cards, run = _claude_cards(rec, brief_text, language, examine, max_claims=int(crit.get('maxResults') or 25), progress=progress)
+    source.update(lines=rec['lines'], langCode=rec['lang'], transcriptVia=rec['via'], generated=True, speakers=rec['speakers'],
+                  recordId=rec['id'], runId=run['id'], analysedAt=time.time(), model=res['model'], language=language,
+                  stance=stance['name'], kind=opts.get('kind') or 'single', claims=len(res['claims']),
+                  fallacies=len(res['fallacies']), exchanges=len(res['exchanges']))
     return source, cards
 
 
@@ -518,6 +642,8 @@ async def worker():
                 book = db.create_book(source['title'][:120], manifest=cards, source=source)
                 book_id = book['id']
                 await book_changed(book_id)
+            if source.get('runId'):
+                db.set_run_book(source['runId'], book_id)
             db.update_job(job['id'], status='done', step=f'{source["claims"]} claims, {source["fallacies"]} fallacies', book_id=book_id, error='')
         except Exception as e:
             log.warning('job %s failed: %s', job['id'], traceback.format_exc())

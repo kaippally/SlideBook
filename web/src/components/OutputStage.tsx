@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
-import { fetchBook, onReconnect, playSound, subscribe, api } from '../lib/api';
+import { fetchBook, onReconnect, playSound, subscribe, api, useServerState } from '../lib/api';
 import { bookSound, layerModel } from '../lib/bookModel';
 import type { Book, Cursor, ServerState } from '../lib/types';
 import { SlideLayer, type SlideLayerModel } from './SlideLayer';
+import { SlideObject } from './SlideObject';
 import { CounterBar } from './CounterBar';
 import { ClipLayer } from './ClipLayer';
+import { useBookSfx } from '../lib/bookSfx';
 import { resolveVideo, type ResolvedVideo } from '../lib/videoObject';
 
 /**
@@ -33,6 +35,7 @@ export function OutputStage() {
   // The slide-change sound plays in `/sfx` when that OBS source is open, so it has its own fader.
   const sfxElsewhere = useRef(false);
   const setClip = (c: typeof clip) => { clipRef.current = c; setClipState(c); };
+  useBookSfx(onAir?.book.styles?.sfx, !!clip && clip.bookId === onAir?.book.id);
 
   // Tell the server this output will play the clip before a card; with no output open, a card
   // shows at once.
@@ -138,15 +141,29 @@ export function OutputStage() {
     return () => { unsub(); unre(); };
   }, []);
 
+  const plain = !!useServerState().plain;
+  // With Plain on, nothing runs a layer's OUT tween, so a layer that leaves is dropped at once.
+  useEffect(() => { if (plain) setLayers(ls => (ls.some(l => l.exiting) ? ls.filter(l => !l.exiting) : ls)); }, [plain, layers]);
   const onExited = (key: number) => setLayers(ls => ls.filter(l => l.key !== key));
   const scale = frame.w > 0 && frame.h > 0 ? Math.min(frame.w / VW, frame.h / VH) : 0;
   const w = scale * VW, h = scale * VH;
   return (
     <div ref={rootRef} className="relative w-full h-full overflow-hidden">
       <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2" style={{ width: w, height: h }}>
-        {scale > 0 && layers.map(l => (
+        {scale > 0 && !plain && layers.map(l => (
           <SlideLayer key={l.key} model={l} frameW={w} frameH={h} scale={scale} onExited={onExited} />
         ))}
+        {/* Plain: the page on screen, flat and front-on, with no tween; it goes when its layer would. */}
+        {scale > 0 && plain && (() => {
+          const l = layers.find(x => !x.exiting);
+          if (!l) return null;
+          return (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <SlideObject key={l.key} src={l.src} videoSrc={l.videoSrc} card={l.card} crop={l.crop} aspect={l.aspect} frameW={w} frameH={h}
+                page={{ ...l.pageStyle, reflection: false, thickness: 0, shadowBlur: 0, shadowX: 0, shadowY: 0 }} thickness={0} scale={scale} />
+            </div>
+          );
+        })()}
         {scale > 0 && clip && (
           <ClipLayer key={clip.seq} video={clip.video} t0={clip.t0} t1={clip.t1} volume={clip.video.volume / 100}
             frameW={w} frameH={h} scale={scale} hold={clip.hold} frozen={clip.frozen} leave={clip.leaving} seq={clip.seq} role="lead"

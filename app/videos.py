@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import subprocess
+import threading
 import time
 import urllib.request
 
@@ -15,10 +16,11 @@ from paths import DATA, MEDIA, tool
 log = logging.getLogger('slidebook.videos')
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 busy = {}   # video id → what it is doing right now (summarising, cutting a short)
+transcribing = {}   # video id → transcription progress (runs beside, not instead of, other work)
 
 
 def payload(v):
-    return {**v, 'busy': busy.get(v['id'], '')}
+    return {**v, 'busy': busy.get(v['id'], ''), 'transcribing': transcribing.get(v['id'], '')}
 
 
 async def publish(video_id):
@@ -27,12 +29,25 @@ async def publish(video_id):
         await core.broadcast({'type': 'video', 'video': payload(v)})
 
 
-async def ingest(url, origin, tg=None):
+async def ingest(url, origin, tg=None, sender=None):
     v, created = db.add_video(url, origin, tg)
     if not created and tg:
         db.update_video(v['id'], tg=tg)
+    add_sender(v, sender)
     await publish(v['id'])
     return db.get_video(v['id'])
+
+
+def add_sender(v, sender):
+    """Who sent this link on Telegram. Everyone who sent it is kept, first sender first."""
+    if not sender or not (sender.get('name') or sender.get('id')):
+        return
+    s = {'id': str(sender.get('id') or ''), 'name': str(sender.get('name') or '').strip(),
+         'username': str(sender.get('username') or '').lstrip('@'), 'at': time.time()}
+    have = db.get_video(v['id']).get('senders') or []
+    if any((h.get('id') and h['id'] == s['id']) or (not s['id'] and h.get('name') == s['name']) for h in have):
+        return
+    db.update_video(v['id'], senders=have + [s])
 
 
 def _thumb_from_url(url):
@@ -102,6 +117,59 @@ async def worker():
 
 def _file(v):
     return MEDIA / v['video'][len('/media/'):]
+
+
+def transcribed(url):
+    """The library video for this link when it already has a whole transcript (and its file), else None."""
+    v = db.video_by_url(url)
+    return v if v and v['transcriptState'] == 'ready' and v.get('video') and _file(v).exists() else None
+
+
+def files_of(v):
+    """Every file the library made for this video, under data/media — minus any a slide book still plays.
+    Copies saved to the user's own folders are not ours to delete."""
+    urls = [v.get('video'), v.get('full')]
+    urls += [x.get('url') for x in v.get('shorts') or []]
+    for sub in v.get('subtitles') or []:
+        urls += [sub.get('srt'), sub.get('vtt')]
+    urls += [r.get('url') for p in v.get('plans') or [] for r in p.get('renders') or []]
+    urls += [im.get('url') for p in v.get('plans') or [] for im in p.get('images') or []]
+    book = db.book_video_for(v['url'])
+    keep = {book['video']} if book else set()
+    keep |= {'/media/' + r for r in db.referenced_media()}   # a file a video slide plays
+    out = []
+    for u in dict.fromkeys(u for u in urls if u and u.startswith('/media/') and u not in keep):
+        f = (MEDIA / u[len('/media/'):]).resolve()
+        if MEDIA.resolve() in f.parents and f.is_file():
+            out.append(f)
+    return out
+
+
+def purge(v):
+    """Delete the video from the library and its files from disk. Returns how many files went."""
+    files = files_of(v)
+    db.delete_video(v['id'])
+    _unlink(files)
+    return len(files)
+
+
+def _unlink(files, tries=20):
+    # Windows refuses to delete a file that is still open (the preview streaming it), so retry until it is let go.
+    held = []
+    for f in files:
+        try:
+            f.unlink(missing_ok=True)
+        except OSError:
+            held.append(f)
+    if held and tries:
+        threading.Timer(3, _unlink, (held, tries - 1)).start()
+    elif held:
+        log.warning('could not delete %s', ', '.join(map(str, held)))
+
+
+def already_note(v):
+    return {'videoId': v['id'], 'title': v['title'] or v['url'],
+            'warning': f'“{v["title"] or v["url"]}” is already in the library with a transcript. Reusing it — no new download or transcription.'}
 
 
 def range_lines(v, start, end, progress=None):

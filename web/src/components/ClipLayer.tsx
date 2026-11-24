@@ -106,8 +106,11 @@ export function ClipLayer({ video, t0, t1, volume, frameW, frameH, scale, onEnd,
     });
   }, [role, seq, frozen, t1]);
 
+  // Hide on pause: the layer stays mounted (it keeps its element and playhead), only out of sight.
   return (
-    <SlideLayer model={videoLayerModel(video, key, media.src, frozen ? 0 : volume, exiting, media.poster)} videoPlaying={!stopped && !paused}
-      frameW={frameW} frameH={frameH} scale={scale} onExited={onGone} />
+    <div className="absolute inset-0 transition-opacity duration-200" style={{ opacity: video.hideOnPause && paused && !frozen ? 0 : 1 }}>
+      <SlideLayer model={videoLayerModel(video, key, media.src, frozen ? 0 : volume, exiting, media.poster)} videoPlaying={!stopped && !paused}
+        frameW={frameW} frameH={frameH} scale={scale} onExited={onGone} />
+    </div>
   );
 }
