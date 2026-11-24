@@ -210,6 +210,74 @@ Rules:
     return res
 
 
+# ── reports: what the operator reads on a phone ───────────────────────────────
+# Every report request is free text. Claude writes the report from the record and the latest analysis,
+# then folds the request into a short list of lasting preferences that shapes every later report.
+
+DEFAULT_REPORT_GUIDANCE = '''- Written to be read on a phone: short paragraphs, one idea each, plain words.
+- Open with a 3-5 line summary of who argued what and who came out stronger, and why.
+- Group findings by theme (e.g. the main arguments, the dodged questions, the factual errors), strongest points first.
+- Every point names the speaker and its timestamp.'''
+
+
+def report_guidance():
+    return db.get_setting('reportGuidance') or DEFAULT_REPORT_GUIDANCE
+
+
+REPORT_SCHEMA = {
+    'type': 'object', 'additionalProperties': False, 'required': ['title', 'summary', 'sections', 'conclusion'],
+    'properties': {
+        'title': _S, 'subtitle': _S,
+        'summary': {'type': 'array', 'items': _S, 'description': 'a few short lines'},
+        'sections': {'type': 'array', 'items': {'type': 'object', 'additionalProperties': False, 'required': ['heading', 'items'],
+            'properties': {'heading': _S, 'intro': _S,
+                           'items': {'type': 'array', 'items': {'type': 'object', 'additionalProperties': False, 'required': ['headline', 'text'],
+                               'properties': {'t': _T, 'tEnd': _T, 'speaker': _S,
+                                              'tag': {'type': 'string', 'description': 'a one or two word verdict, e.g. FALSE, DODGED, FALLACY, STRONG POINT'},
+                                              'headline': _S, 'text': _S}}}}}},
+        'conclusion': _S,
+    },
+}
+
+
+def write_report(rec, request='', analysis=None, language='English'):
+    """A report for reading on a phone. `analysis` is the raw JSON of an earlier analysis run (or None)."""
+    system = f'''{house_rules()}
+
+You write a report about one recorded video for the operator to read on a smartphone.
+
+THE OPERATOR'S LASTING PREFERENCES FOR REPORTS (always follow them):
+{report_guidance()}
+
+Rules:
+- Base every point on the record; use the earlier analysis as a starting point, not as the last word — correct it where the record says otherwise.
+- "t" is the [HH:MM:SS] of the record line a point refers to.
+- Write in {language} unless the request asks for another language. Plain text in every field — no Markdown.'''
+    parts = [_header(rec), 'RECORD:', record_text(rec)]
+    if analysis:
+        parts += ['EARLIER ANALYSIS (JSON):', analysis]
+    parts += ["THE OPERATOR'S REQUEST FOR THIS REPORT:", request or '(none — follow the lasting preferences)']
+    r = run(system, '\n\n'.join(parts), ANALYSE_MODEL, schema=REPORT_SCHEMA, effort='medium')
+    return {'report': r['data'], 'model': r['model'], 'usage': r['usage'], 'cost': r['cost']}
+
+
+def learn_guidance(request):
+    """Fold one report request into the lasting preferences: keep what is general, drop one-off detail."""
+    if not request.strip():
+        return report_guidance()
+    system = '''You maintain a short list of an operator's lasting preferences for the reports written for him.
+Given the current list and his newest request, return the updated list:
+- Add what the request reveals about how he generally wants reports (structure, length, emphasis, tone, language, what to leave out).
+- Leave out details that only fit this one video (names, topics, timestamps).
+- Merge duplicates; where the new request contradicts an older line, the new request wins.
+- At most 12 lines, each starting with "- ". Return only the list.'''
+    r = run(system, f'CURRENT LIST:\n{report_guidance()}\n\nNEWEST REQUEST:\n{request}', ASK_MODEL, effort='low', timeout=180)
+    text = '\n'.join(l for l in r['text'].strip().splitlines() if l.strip().startswith('- ')).strip()
+    if text:
+        db.set_setting('reportGuidance', text)
+    return report_guidance()
+
+
 # ── questions ─────────────────────────────────────────────────────────────────
 
 def ask(rec, question):

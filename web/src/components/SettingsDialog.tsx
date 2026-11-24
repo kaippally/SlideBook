@@ -16,10 +16,12 @@ export function SettingsDialog({ onClose, onSaved, bot, onBot }: { onClose: () =
   const [crit, setCrit] = useState<Critique | null>(null);
   const [stanceId, setStanceId] = useState('');
   const [rules, setRules] = useState<{ text: string; default: string } | null>(null);
+  const [prefs, setPrefs] = useState<{ text: string; default: string } | null>(null);
 
   useEffect(() => {
     api<Settings>('/api/settings').then(v => { setS(v); setCrit(v.critique); setStanceId(v.critique.activeId); });
     api<{ text: string; default: string }>('/api/house-rules').then(setRules).catch(() => {});
+    api<{ text: string; default: string }>('/api/report-guidance').then(setPrefs).catch(() => {});
   }, []);
   useEffect(() => {
     const k = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -33,6 +35,7 @@ export function SettingsDialog({ onClose, onSaved, bot, onBot }: { onClose: () =
     if (gemini.trim()) body.geminiKey = gemini.trim();
     const r = await attempt(api<Settings>('/api/settings', { method: 'PUT', json: body }), 'Save settings');
     if (rules) await attempt(api('/api/house-rules', { method: 'PUT', json: { text: rules.text === rules.default ? '' : rules.text } }), 'Save house rules');
+    if (prefs) await attempt(api('/api/report-guidance', { method: 'PUT', json: { text: prefs.text === prefs.default ? '' : prefs.text } }), 'Save report preferences');
     if (r) { setS(r); setGemini(''); onSaved(r); notify('Settings saved'); }
   };
 
@@ -93,6 +96,16 @@ export function SettingsDialog({ onClose, onSaved, bot, onBot }: { onClose: () =
                 </div>
                 <p className="text-slate-400">The standing standard every Claude analysis and answer follows, for every video. Gemini only transcribes; Claude does all the thinking from the text record.</p>
                 <textarea value={rules.text} onChange={e => setRules({ ...rules, text: e.target.value })} rows={12} className={`${field} font-mono text-[11px] leading-snug`} />
+              </section>
+            )}
+            {prefs && (
+              <section className="col-span-2 flex flex-col gap-2">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Report preferences — learned</h3>
+                  {prefs.text !== prefs.default && <button onClick={() => setPrefs({ ...prefs, text: prefs.default })} className="ml-auto text-[10px] text-slate-400 hover:text-white">Reset</button>}
+                </div>
+                <p className="text-slate-400">Claude updates this list from every report you request on Telegram, and every report follows it. Edit it freely.</p>
+                <textarea value={prefs.text} onChange={e => setPrefs({ ...prefs, text: e.target.value })} rows={8} className={`${field} font-mono text-[11px] leading-snug`} />
               </section>
             )}
           </div>

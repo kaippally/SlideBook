@@ -553,7 +553,8 @@ def record_or_404(rid, full=True):
 def _record_summary(r):
     runs = db.list_runs(r['vkey'])
     analyses = [x for x in runs if x['kind'] == 'analyse']
-    return {**r, 'videoId': analysis.youtube_id(r['url']), 'analyses': len(analyses), 'asks': len(runs) - len(analyses),
+    return {**r, 'videoId': analysis.youtube_id(r['url']), 'analyses': len(analyses),
+            'asks': sum(1 for x in runs if x['kind'] == 'ask'), 'reports': sum(1 for x in runs if x['kind'] == 'report'),
             'lastBookId': next((x['book_id'] for x in analyses if x['book_id']), None)}
 
 
@@ -609,6 +610,52 @@ async def record_ask(req):
         return bad(str(e), 502)
     run = db.add_run(r['vkey'], r['id'], 'ask', q, a['model'], a['answer'], {**a['usage'], 'cost': a['cost']})
     return ok({'answer': a['answer'], 'runId': run['id'], 'url': r['url'], 'videoId': analysis.youtube_id(r['url']), 'title': r['title']})
+
+
+@routes.post('/api/records/{id}/report')
+async def record_report(req):
+    """A phone report written by Claude from the record and an analysis (the given run, else the newest),
+    shaped by the free-text request and the learned report preferences. The request is then folded into
+    those preferences, so the next report starts closer to what is wanted."""
+    import reasoning
+    r = record_or_404(req.match_info['id'])
+    body = await req.json()
+    request = (body.get('request') or '').strip()
+    runs = db.list_runs(r['vkey'], 'analyse')
+    base = db.get_run(int(body['runId'])) if body.get('runId') else (runs[0] if runs else None)
+    language = body.get('language') or ((base or {}).get('usage') or {}).get('language') or 'English'
+    try:
+        rep = await asyncio.to_thread(reasoning.write_report, r, request, base['result'] if base else None, language)
+    except reasoning.ClaudeError as e:
+        return bad(str(e), 502)
+    run = db.add_run(r['vkey'], r['id'], 'report', request, rep['model'], json.dumps(rep['report'], ensure_ascii=False),
+                     {**rep['usage'], 'cost': rep['cost'], 'language': language}, base_run=base['id'] if base else None)
+    if request:
+        asyncio.ensure_future(asyncio.to_thread(reasoning.learn_guidance, request))
+    return ok({'report': rep['report'], 'runId': run['id'], 'version': run['version'], 'url': r['url'],
+               'videoId': analysis.youtube_id(r['url']), 'title': r['title']})
+
+
+@routes.get('/api/runs/{id}')
+async def run_get(req):
+    run = db.get_run(int(req.match_info['id']))
+    if not run:
+        raise web.HTTPNotFound(text='no such run')
+    rec = db.get_record(run['record_id'], full=False) or {}
+    return ok({**run, 'url': rec.get('url'), 'title': rec.get('title'), 'videoId': analysis.youtube_id(rec.get('url') or '')})
+
+
+@routes.get('/api/report-guidance')
+async def report_guidance_get(_):
+    import reasoning
+    return ok({'text': reasoning.report_guidance(), 'default': reasoning.DEFAULT_REPORT_GUIDANCE})
+
+
+@routes.put('/api/report-guidance')
+async def report_guidance_put(req):
+    text = ((await req.json()).get('text') or '').strip()
+    db.set_setting('reportGuidance', text or None)
+    return ok()
 
 
 @routes.get('/api/house-rules')
