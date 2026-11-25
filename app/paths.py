@@ -18,6 +18,8 @@ MEDIA = DATA / 'media'
 FONTS = BASE / 'fonts' if (BASE / 'fonts').exists() else HERE / 'fonts'
 TOOLS = BASE / 'tools'
 SFX = BASE / 'sfx'
+# The one help file, shared with StudioMate's Telegram Mini App. Beside the exe so an edit needs no rebuild.
+HELP = BASE / 'HELP.md'
 USER_SFX = DATA / 'sfx'
 DB_FILE = DATA / 'slidebook.db'
 PORT = 8780

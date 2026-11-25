@@ -1,5 +1,7 @@
 # SlideBook
 
+> **Operator help is [HELP.md](HELP.md)** — one file, shown by the desktop app's **? Help** button (`/help`) and, cut to each viewer's permissions, by StudioMate's Telegram Mini App (`/api/help?for=<roles>`; tag a section with `<!-- for: … -->`). This README is for building and maintaining the app.
+
 A standalone Windows app that turns a video link into a linear slide show of **fact-check (FactBox) cards and logical-fallacy cards**, presented with StudioMate's 3D slide motion (IN / HOLD / OUT poses, slab, border, floor reflection). The video plays separately. The presenter steps the slides by hand.
 
 ## 1. Running
@@ -143,9 +145,7 @@ SlideBook has no bot of its own. Links arrive through **StudioMate's bot** (@Kai
 - what kind of video it is (one speaker / debate / panel);
 - what to examine;
 - who is speaking;
-- the tone (this app's critique stances, read from `GET /api/stances`);
-- the card language;
-- what the sender expects;
+- background, and what the sender expects;
 - whether to start a new book or add to the book on air.
 
 The bot POSTs the link and the answers to `/api/analyse` (`origin: studiomate-bot`, with a `notify` address). `app/relay.py` posts each step back to the bot's event server (`http://127.0.0.1:5001/event`, overridable with `STUDIOMATE_BOT_EVENT_URL`), and the bot edits one status message. When the book is ready, that message gets **▶ Put on air**. `/sb next`, `/sb prev` and `/sb live` step the book on air. The StudioMate side is described in its `data/docs/MODULES/TELEGRAM.md` §7.4.2.

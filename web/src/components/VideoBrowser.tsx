@@ -12,6 +12,7 @@ import { ShortTracks, type ClipSel } from './ShortTracks';
 import { Splitter, usePanelSize } from './Splitter';
 import { useSoundFx, useSoundLengths } from '../lib/soundfx';
 import { ShortsShelf } from './ShortsShelf';
+import { openWindow } from '../lib/windows';
 
 const SUB_LANGS = ['Original', 'English', 'Malayalam', 'Hindi', 'Arabic', 'Tamil'];
 
@@ -598,6 +599,7 @@ export function VideoBrowser() {
           <button onClick={() => setRange([0, duration])} disabled={!ready} className="px-2 py-1 rounded border border-slate-700 disabled:opacity-40">Whole video</button>
           <span className="text-slate-600 hidden 2xl:inline">← → seek · , . frame · Space play</span>
           <span className="ml-auto tabular-nums text-slate-400">{fmt(time)} / {fmt(duration)}</span>
+          <button onClick={() => openWindow('/help', 'SlideBook Help', 900, 900)} className="px-2 py-1 rounded border border-slate-700" title="Help — the same guide the Telegram app shows">? Help</button>
         </div>
         <div className="flex items-center gap-2">
           <button disabled={!canAct} onClick={() => void run('factcheck')} className={`${btn} border-blue-500 bg-blue-600 hover:bg-blue-500 text-white`}>Fact check</button>

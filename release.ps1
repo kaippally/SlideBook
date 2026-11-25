@@ -20,7 +20,7 @@ $sfx = Join-Path $rel 'sfx'
 Remove-Item $stage, $sfx -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $stage, $sfx | Out-Null
 
-Copy-Item SlideBook.exe, README.md, Setup-SlideBook.ps1, Setup-SlideBook.cmd $stage
+Copy-Item SlideBook.exe, README.md, HELP.md, Setup-SlideBook.ps1, Setup-SlideBook.cmd $stage
 Copy-Item fonts, obs $stage -Recurse
 if (Test-Path tools) { Copy-Item tools $stage -Recurse }
 if (Test-Path SlideBookVideos.exe) { Copy-Item SlideBookVideos.exe $stage }

@@ -26,12 +26,7 @@ import {
 
 const CLIP_PREFIX = 'slidebook-pages:';
 
-declare global { interface Window { pywebview?: { api: { open_window: (path: string, title: string, w?: number, h?: number) => void; pick_folder: (start?: string) => Promise<string> } } } }
-
-export function openWindow(path: string, title: string, w = 1280, h = 760) {
-  if (window.pywebview?.api) window.pywebview.api.open_window(path, title, w, h);
-  else window.open(path, title.replace(/\W/g, ''), `width=${w},height=${h}`);
-}
+import { openWindow } from './lib/windows';
 
 export function App() {
   const srv = useServerState();
@@ -426,6 +421,7 @@ export function App() {
               <button onClick={() => openWindow('/videos', 'SlideBook Videos', 1400, 900)} className="px-2 py-0.5 rounded border border-slate-700 text-[11px] text-slate-300 hover:border-slate-500" title="Videos sent by Telegram: pick a range, then fact-check, summarise, make a short or save a clip">Videos</button>
               <button onClick={openVideo} className="px-2 py-0.5 rounded border border-slate-700 text-[11px] text-slate-300 hover:border-slate-500" title="The cards and the transcript in a separate window — click to go to a card or play a moment on the canvas">Navigator</button>
               <button onClick={() => openWindow('/output', 'SlideBook Output', 960, 560)} className="px-2 py-0.5 rounded border border-slate-700 text-[11px] text-slate-300 hover:border-slate-500" title="Preview what OBS shows">Output</button>
+              <button onClick={() => openWindow('/help', 'SlideBook Help', 900, 900)} className="px-2 py-0.5 rounded border border-slate-700 text-[11px] text-slate-300 hover:border-slate-500" title="Help — the same guide the Telegram app shows">? Help</button>
             </div>
           </div>
           <SlideCanvas

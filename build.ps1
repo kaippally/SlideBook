@@ -14,7 +14,7 @@ $built = Get-Date -Format 'yyyy-MM-dd HH:mm'
 "BUILD = $build`nBUILT = '$built'`n" | Set-Content app/build_info.py -Encoding ascii -NoNewline
 $out = Join-Path $env:TEMP 'slidebook_pbuild'
 & .venv\Scripts\python.exe -m PyInstaller app/desktop.py --onefile --noconsole --noconfirm --name SlideBook `
-  --paths "$PSScriptRoot/app" --hidden-import server --hidden-import core --hidden-import db --hidden-import analysis --hidden-import relay --hidden-import bot --hidden-import videos --hidden-import shorts --hidden-import updater --hidden-import build_info --hidden-import paths --hidden-import reasoning --hidden-import report_html `
+  --paths "$PSScriptRoot/app" --hidden-import server --hidden-import core --hidden-import db --hidden-import analysis --hidden-import relay --hidden-import bot --hidden-import videos --hidden-import shorts --hidden-import updater --hidden-import build_info --hidden-import paths --hidden-import reasoning --hidden-import report_html --hidden-import help_doc `
   --collect-all yt_dlp --collect-all yt_dlp_ejs --collect-submodules google.genai --collect-submodules aiohttp --collect-submodules telegram `
   --collect-submodules youtube_transcript_api --collect-all pymupdf --hidden-import fitz `
   --add-data "$PSScriptRoot/web/dist;dist" `

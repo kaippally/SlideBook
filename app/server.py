@@ -708,6 +708,29 @@ async def run_get(req):
     return ok({**run, 'url': rec.get('url'), 'title': rec.get('title'), 'videoId': analysis.youtube_id(rec.get('url') or '')})
 
 
+HELP_ROLES = {'everyone', 'send', 'photo', 'transcribe', 'slidebook', 'reports', 'owner', 'desktop'}
+
+
+def _help_roles(req):
+    """`?for=a,b` — only those roles' sections (StudioMate's Mini App); absent — every section (the desktop)."""
+    if 'for' not in req.query:
+        return None
+    return {r for r in req.query['for'].split(',') if r in HELP_ROLES}
+
+
+@routes.get('/help')
+async def help_page(req):
+    import help_doc
+    return web.Response(text=help_doc.page(_help_roles(req)), content_type='text/html', charset='utf-8', headers={'Cache-Control': 'no-store'})
+
+
+@routes.get('/api/help')
+async def help_json(req):
+    import help_doc
+    title, body, toc = help_doc.render(_help_roles(req))
+    return ok({'title': title, 'html': body, 'toc': [{'id': i, 'title': t} for i, t in toc]})
+
+
 @routes.get('/api/report-guidance')
 async def report_guidance_get(_):
     import reasoning
