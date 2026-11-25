@@ -516,6 +516,8 @@ def process_job(job, progress):
     rec = db.latest_record(video_key(url))
     if rec and (rec['kind'] == 'debate' or not debate):
         progress(f'Using the saved record v{rec["version"]} — no new transcription')
+        if opts.get('transcribeOnly'):
+            return {'madeRecord': rec['id'], 'title': rec['title']}, None
         if rec['video'] and (MEDIA / rec['video'][len('/media/'):]).exists():
             source['video'] = rec['video']
         else:
@@ -572,6 +574,8 @@ def process_job(job, progress):
         import relay
         relay.post_sync({'type': 'slidebook-record', **opts['notify'], 'recordId': rec['id'], 'title': rec['title'],
                          'speakers': speakers, 'url': url})
+    if opts.get('transcribeOnly'):
+        return {'madeRecord': rec['id'], 'title': rec['title']}, None
     return _analyse_record(rec, source, opts, crit, stance, debate, progress)
 
 
@@ -634,7 +638,12 @@ async def worker():
         await broadcast({'type': 'job', 'job': db.get_job(job['id'])})
         try:
             source, cards = await asyncio.to_thread(process_job, job, progress)
-            target = job['book_id'] if job['mode'] == 'append' and job['book_id'] and db.get_book(job['book_id']) else None
+            if cards is None:   # transcribe only: the record is the whole result, no book
+                db.update_job(job['id'], status='done', step=f'Transcribed — record #{source["madeRecord"]}', error='',
+                              options={**job['options'], 'madeRecord': source['madeRecord']})
+                await broadcast({'type': 'job', 'job': db.get_job(job['id'])})
+                continue
+            target =job['book_id'] if job['mode'] == 'append' and job['book_id'] and db.get_book(job['book_id']) else None
             if target:
                 await edit_manifest(target, lambda m: m + cards)
                 book_id = target

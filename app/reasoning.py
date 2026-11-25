@@ -14,7 +14,12 @@ log = logging.getLogger('slidebook.reasoning')
 ANALYSE_MODEL = 'opus'
 ASK_MODEL = 'sonnet'
 
-DEFAULT_HOUSE_RULES = '''You analyse recorded talks, debates and interviews for a channel that makes the strongest honest case for scientific rationalism against faith in supernatural gods.
+DEFAULT_HOUSE_RULES = '''You analyse recorded talks, debates and interviews for an atheist, rationalist, non-religious channel. You write from that perspective, and the aim is always to defeat the theist case: expose every weak argument, unsupported claim, dodge and contradiction on the religious side, and make the rationalist case land as hard as the evidence allows.
+
+Perspective
+- You are on the rationalist side, not a neutral referee. Every section should leave the reader seeing why the theist position fails.
+- Stay accurate: never invent a quote, a fact or a timestamp, and never misstate what someone said. A false point is a weakness the other side can use.
+- When the rationalist speaker slips, says something wrong or misses an opening, say so as "how the rationalist case should have been argued", so the next debate is won.
 
 Standard of evidence
 - Assess every claim by publicly checkable evidence. Scripture, tradition, clerical authority, personal revelation and religious experience are claims to be examined, never evidence for the claim being made.
@@ -23,9 +28,9 @@ Standard of evidence
 
 How to argue
 - Name each apologetic or rhetorical move by its standard name where one applies: unfalsifiable reframing, argument from authority, argument from ignorance / god of the gaps, shifting the burden of proof, special pleading, equivocation, quote-mining, appeal to consequences, moving the goalposts.
-- Steelman before you rebut: state the speaker's point in its strongest form, then show where it fails.
-- Where a speaker — on either side — is right, say so plainly. Credibility comes from fairness; never overstate the case against an opponent.
-- Distinguish what is false from what is unproven or unfalsifiable.
+- Steelman the theist point in one line, then take it apart: a rebuttal of the strongest version is the one that wins.
+- Distinguish what is false from what is unproven or unfalsifiable — "unfalsifiable" is itself a defeat for a claim presented as knowledge.
+- If a theist point is factually correct, concede only that fact, then show why it does not get them to God.
 
 Style
 - Short, concrete, quotable sentences that would land on a card read in a few seconds.
@@ -241,6 +246,20 @@ REPORT_SCHEMA = {
 }
 
 
+MALAYALAM_RULES = '''LANGUAGE: Malayalam, written the way the speakers in this recording actually talk.
+- Match their register. Where they speak formal Malayalam, write formal Malayalam. Where they speak colloquially, write colloquially.
+- Where they mix English into Malayalam, keep those English words and phrases in English exactly as they used them, followed by the Malayalam translation in brackets — e.g. "fine-tuning (സൂക്ഷ്മ ക്രമീകരണം)".
+- The record writes spoken English words in Malayalam script (e.g. "മോറൽ റെസ്പോൺസിബിലിറ്റി" is the English "moral responsibility"). In the report, write such words in English as spoken, with the Malayalam translation in brackets.
+- Quotes keep the speaker's own words and mix. Speaker names, verdict tags and standard fallacy names stay as they are, in English.
+- The report's tone and style follow the debate's own style.'''
+
+
+def language_rules(language):
+    if (language or '').lower().startswith('malayalam'):
+        return MALAYALAM_RULES
+    return f'LANGUAGE: {language or "English"}. Translate quotes into {language or "English"}; keep speaker names as given.'
+
+
 def write_report(rec, request='', analysis=None, language='English'):
     """A report for reading on a phone. `analysis` is the raw JSON of an earlier analysis run (or None)."""
     system = f'''{house_rules()}
@@ -254,11 +273,13 @@ Rules:
 - Base every point on the record; use the earlier analysis as a starting point, not as the last word — correct it where the record says otherwise.
 - "t" is the [HH:MM:SS] of the record line a point refers to.
 - Set "frame": true on at most 6 points where a still from the video at that moment adds context; the frames are taken from the video for you.
-- Write in {language} unless the request asks for another language. Plain text in every field — no Markdown.'''
+- Follow the LANGUAGE rules given at the end for every field. Plain text in every field — no Markdown.'''
+    # The record (and analysis) come first and the language last, so the second report of a pair reads
+    # the record from the prompt cache instead of paying for it again.
     parts = [_header(rec), 'RECORD:', record_text(rec)]
     if analysis:
         parts += ['EARLIER ANALYSIS (JSON):', analysis]
-    parts += ["THE OPERATOR'S REQUEST FOR THIS REPORT:", request or '(none — follow the lasting preferences)']
+    parts += ["THE OPERATOR'S REQUEST FOR THIS REPORT:", request or '(none — follow the lasting preferences)', language_rules(language)]
     r = run(system, '\n\n'.join(parts), ANALYSE_MODEL, schema=REPORT_SCHEMA, effort='medium')
     return {'report': r['data'], 'model': r['model'], 'usage': r['usage'], 'cost': r['cost']}
 
@@ -295,6 +316,7 @@ def learn_guidance(request):
 Given the current list and his newest request, return the updated list:
 - Add what the request reveals about how he generally wants reports (structure, length, emphasis, tone, language, what to leave out).
 - Leave out details that only fit this one video (names, topics, timestamps).
+- Leave out the report language: it is chosen separately for every report.
 - Merge duplicates; where the new request contradicts an older line, the new request wins.
 - At most 12 lines, each starting with "- ". Return only the list.'''
     r = run(system, f'CURRENT LIST:\n{report_guidance()}\n\nNEWEST REQUEST:\n{request}', ASK_MODEL, effort='low', timeout=180)

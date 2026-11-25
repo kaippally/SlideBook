@@ -497,7 +497,7 @@ async def analyse(req):
     book_id = body.get('bookId')
     if body.get('mode') == 'live':
         book_id = (core.state.get('live') or {}).get('bookId')
-    opts = {k: body[k] for k in ('language', 'stanceId', 'instruction', 'kind', 'examine', 'speakers', 'context', 'expectation', 'notify')
+    opts = {k: body[k] for k in ('language', 'stanceId', 'instruction', 'kind', 'examine', 'speakers', 'context', 'expectation', 'notify', 'transcribeOnly')
             if body.get(k)}
     if body.get('lang') in LANGS:
         opts['language'] = LANGS[body['lang']]
@@ -623,18 +623,24 @@ async def record_report(req):
     request = (body.get('request') or '').strip()
     runs = db.list_runs(r['vkey'], 'analyse')
     base = db.get_run(int(body['runId'])) if body.get('runId') else (runs[0] if runs else None)
-    language = body.get('language') or ((base or {}).get('usage') or {}).get('language') or 'English'
-    try:
-        rep = await asyncio.to_thread(reasoning.write_report, r, request, base['result'] if base else None, language)
-    except reasoning.ClaudeError as e:
-        return bad(str(e), 502)
-    await asyncio.to_thread(reasoning.add_frames, r, rep['report'], db.new_id('r'))
-    run = db.add_run(r['vkey'], r['id'], 'report', request, rep['model'], json.dumps(rep['report'], ensure_ascii=False),
-                     {**rep['usage'], 'cost': rep['cost'], 'language': language}, base_run=base['id'] if base else None)
+    # Every report is made in English and Malayalam, one after the other so the second reads the record
+    # from the prompt cache. A single language can still be asked for by name.
+    languages = [body['language']] if body.get('language') in ('English', 'Malayalam') else ['English', 'Malayalam']
+    made = []
+    for language in languages:
+        try:
+            rep = await asyncio.to_thread(reasoning.write_report, r, request, base['result'] if base else None, language)
+        except reasoning.ClaudeError as e:
+            if made:
+                break
+            return bad(str(e), 502)
+        await asyncio.to_thread(reasoning.add_frames, r, rep['report'], db.new_id('r'))
+        run = db.add_run(r['vkey'], r['id'], 'report', request, rep['model'], json.dumps(rep['report'], ensure_ascii=False),
+                         {**rep['usage'], 'cost': rep['cost'], 'language': language}, base_run=base['id'] if base else None)
+        made.append({'runId': run['id'], 'version': run['version'], 'language': language, 'title': rep['report'].get('title', '')})
     if request:
         asyncio.ensure_future(asyncio.to_thread(reasoning.learn_guidance, request))
-    return ok({'report': rep['report'], 'runId': run['id'], 'version': run['version'], 'url': r['url'],
-               'videoId': analysis.youtube_id(r['url']), 'title': r['title']})
+    return ok({'reports': made, 'runId': made[0]['runId'], 'url': r['url'], 'videoId': analysis.youtube_id(r['url']), 'title': r['title']})
 
 
 @routes.get('/api/reports')
@@ -648,6 +654,7 @@ async def reports_list(_):
             except ValueError:
                 title = ''
             out.append({'id': run['id'], 'version': run['version'], 'request': run['prompt'], 'title': title, 'createdAt': run['created_at'],
+                        'language': (run.get('usage') or {}).get('language', ''),
                         'recordId': rec['id'], 'recordTitle': rec['title'], 'url': rec['url']})
     return ok(sorted(out, key=lambda x: -x['createdAt']))
 

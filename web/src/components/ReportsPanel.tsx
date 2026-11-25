@@ -5,7 +5,7 @@ import { attempt, notify } from './Dialog';
 // The Reports tab: every transcript (video record) with the reports Claude wrote from it, and a box to
 // ask for a new one in your own words. Each request also teaches the learned report preferences.
 
-export interface ReportItem { id: number; version: number; request: string; title: string; createdAt: number; recordId: number; recordTitle: string; url: string }
+export interface ReportItem { id: number; version: number; request: string; title: string; language: string; createdAt: number; recordId: number; recordTitle: string; url: string }
 interface RecordItem { id: number; title: string; url: string; kind: string; reports: number; lineCount: number; created_at: number }
 
 const field = 'w-full bg-[#0d1117] border border-slate-700 rounded px-2 py-1.5 text-[12px] text-slate-100 placeholder:text-slate-600';
@@ -50,8 +50,9 @@ export function ReportsPanel({ selected, onSelect }: { selected: number | null; 
         <textarea value={request} onChange={e => setRequest(e.target.value)} rows={4} className={field} disabled={busy}
           placeholder='How should it be made? e.g. "Evaluate the debate and write a report in English. Highlight the 5 most glaring errors and omissions by both participants."' />
         <button onClick={() => void write()} disabled={!recordId || busy}
-          className="self-end px-3 py-1 rounded bg-sky-600 hover:bg-sky-500 disabled:opacity-40 text-[11px] font-semibold text-white">
-          {busy ? 'Claude is writing… (1–3 min)' : 'Write report'}
+          className="self-end px-3 py-1 rounded bg-sky-600 hover:bg-sky-500 disabled:opacity-40 text-[11px] font-semibold text-white"
+          title="Always two reports: English, and Malayalam in the speakers' own usage">
+          {busy ? 'Claude is writing both… (3–6 min)' : 'Write reports (English + മലയാളം)'}
         </button>
         {!records.length && <p className="text-[11px] text-slate-500">No transcripts yet — analyse a link first.</p>}
       </div>
@@ -72,6 +73,7 @@ export function ReportsPanel({ selected, onSelect }: { selected: number | null; 
                 className={`group px-3 py-1.5 border-l-2 cursor-pointer ${selected === x.id ? 'border-amber-500 bg-amber-950/30' : 'border-transparent hover:bg-slate-900'}`}>
                 <div className="flex items-center gap-1.5 text-[11px]">
                   <span className="text-slate-200 font-semibold">v{x.version}</span>
+                  {x.language && <span className="px-1 rounded bg-slate-800 text-[9px] text-slate-300">{x.language === 'Malayalam' ? 'മലയാളം' : 'EN'}</span>}
                   <span className="text-slate-500 tabular-nums">{day(x.createdAt)}</span>
                   <button onClick={e => { e.stopPropagation(); void attempt(api(`/api/runs/${x.id}/telegram`, { method: 'POST' }), 'Send').then(r => r && notify('Sent to Telegram as a PDF')); }}
                     className="ml-auto hidden group-hover:block text-[10px] text-sky-300 hover:text-sky-200" title="StudioMate's bot sends it to you as a phone PDF">Telegram</button>

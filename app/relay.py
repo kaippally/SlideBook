@@ -27,7 +27,8 @@ async def on_broadcast(msg):
     _last[job['id']] = key
     event = {'type': 'slidebook-job', 'chatId': notify.get('chatId'), 'messageId': notify.get('messageId'),
              'jobId': job['id'], 'status': job['status'], 'step': job['step'], 'error': job.get('error') or '',
-             'url': job['url'], 'bookId': job.get('book_id')}
+             'url': job['url'], 'bookId': job.get('book_id'),
+             'transcribeOnly': bool(job['options'].get('transcribeOnly')), 'madeRecord': job['options'].get('madeRecord')}
     if job['status'] == 'done' and job.get('book_id'):
         import db
         b = db.get_book(job['book_id'])
