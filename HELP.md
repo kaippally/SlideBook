@@ -61,6 +61,7 @@ Open **📚 Reports** (the keyboard button, or the Reports tile in the app).
 - Every report comes as a **pair: English and Malayalam**. The Malayalam follows the speakers: formal Malayalam stays formal, and English words they mixed in stay in English with the Malayalam beside them.
 - Reports are written from an atheist, rationalist perspective. They never invent a quote, a fact or a time.
 - Up to six stills from the video show the moments the report points to.
+- Every report is also published, as a web page and a PDF, at **https://kaippally.github.io/K-Ai-Repo/** (the public repository github.com/kaippally/K-Ai-Repo), as soon as it is written.
 
 <!-- for: slidebook -->
 ## 4. SlideBook on air from your phone
