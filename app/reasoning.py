@@ -234,7 +234,8 @@ REPORT_SCHEMA = {
                            'items': {'type': 'array', 'items': {'type': 'object', 'additionalProperties': False, 'required': ['headline', 'text'],
                                'properties': {'t': _T, 'tEnd': _T, 'speaker': _S,
                                               'tag': {'type': 'string', 'description': 'a one or two word verdict, e.g. FALSE, DODGED, FALLACY, STRONG POINT'},
-                                              'headline': _S, 'text': _S}}}}}},
+                                              'headline': _S, 'text': _S,
+                                              'frame': {'type': 'boolean', 'description': 'true when a still of the video at "t" adds context (the speaker making the point, a slide or prop shown)'}}}}}}},
         'conclusion': _S,
     },
 }
@@ -252,6 +253,7 @@ THE OPERATOR'S LASTING PREFERENCES FOR REPORTS (always follow them):
 Rules:
 - Base every point on the record; use the earlier analysis as a starting point, not as the last word — correct it where the record says otherwise.
 - "t" is the [HH:MM:SS] of the record line a point refers to.
+- Set "frame": true on at most 6 points where a still from the video at that moment adds context; the frames are taken from the video for you.
 - Write in {language} unless the request asks for another language. Plain text in every field — no Markdown.'''
     parts = [_header(rec), 'RECORD:', record_text(rec)]
     if analysis:
@@ -259,6 +261,30 @@ Rules:
     parts += ["THE OPERATOR'S REQUEST FOR THIS REPORT:", request or '(none — follow the lasting preferences)']
     r = run(system, '\n\n'.join(parts), ANALYSE_MODEL, schema=REPORT_SCHEMA, effort='medium')
     return {'report': r['data'], 'model': r['model'], 'usage': r['usage'], 'cost': r['cost']}
+
+
+def add_frames(rec, rep, tag):
+    """Stills from the video for the points Claude marked, plus a cover, saved under media/frames. Points
+    without a video file on disk keep their text only."""
+    from paths import MEDIA, tool
+    src = MEDIA / rec['video'][len('/media/'):] if rec.get('video', '').startswith('/media/') else None
+    if not src or not src.exists():
+        return rep
+    out = MEDIA / 'frames'
+    out.mkdir(parents=True, exist_ok=True)
+
+    def grab(t, name):
+        f = out / f'{tag}-{name}.jpg'
+        subprocess.run([tool('ffmpeg'), '-y', '-loglevel', 'error', '-ss', str(max(0, t)), '-i', str(src), '-frames:v', '1',
+                        '-vf', 'scale=720:-2', '-q:v', '4', str(f)], creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        return f'/media/frames/{f.name}' if f.exists() and f.stat().st_size else None
+
+    picked = [it for s in rep.get('sections') or [] for it in s.get('items') or [] if it.get('frame') and it.get('t')][:6]
+    for n, it in enumerate(picked):
+        it['image'] = grab(_secs(it['t']) + 1, str(n))
+    if rec.get('duration'):
+        rep['cover'] = grab(rec['duration'] * 0.3, 'cover')
+    return rep
 
 
 def learn_guidance(request):

@@ -4,6 +4,7 @@ import { BooksPanel } from './components/BooksPanel';
 import { SlideCanvas } from './components/SlideCanvas';
 import { AudioOutPicker } from './components/AudioOutPicker';
 import { SlidesPanel } from './components/SlidesPanel';
+import { ReportView, ReportsPanel } from './components/ReportsPanel';
 import { getUiSetting, setUiSetting } from './lib/uiSettings';
 import { ClipPanel } from './components/ClipPanel';
 import { Inspector, type InspectorActions, type VideoActions } from './components/Inspector';
@@ -41,8 +42,12 @@ export function App() {
   const live = !!book && srv.live?.bookId === book.id;
   const [slideState, setSlideState] = useState<SlideState>('hold');
   const [stageSel, setStageSel] = useState<StageObject>('slide');
-  const [leftTab, setLeftTab] = useState<'books' | 'slides'>(() => (getUiSetting('leftTab') === 'books' ? 'books' : 'slides'));
+  const [leftTab, setLeftTab] = useState<'books' | 'slides' | 'reports'>(() => {
+    const t = getUiSetting('leftTab');
+    return t === 'books' || t === 'reports' ? t : 'slides';
+  });
   useEffect(() => { setUiSetting('leftTab', leftTab); }, [leftTab]);
+  const [reportId, setReportId] = useState<number | null>(null);
   const [sfxLib] = useSoundFx();
   const [rangeDraft, setRangeDraft] = useState<{ first: number; t0: number; t1: number } | null>(null);
   const [cue, setCue] = useState<{ t: number; n: number } | null>(null);
@@ -351,15 +356,17 @@ export function App() {
       <div className="flex-1 min-h-0 flex">
         <div className="w-[300px] shrink-0 min-h-0 flex flex-col border-r border-slate-800">
           <div className="flex border-b border-slate-800 bg-[#0b0d10]">
-            {(['books', 'slides'] as const).map(t => (
+            {(['books', 'slides', 'reports'] as const).map(t => (
               <button key={t} onClick={() => setLeftTab(t)} disabled={t === 'slides' && !book}
                 className={`flex-1 py-1.5 text-[11px] font-semibold uppercase tracking-wide disabled:opacity-30 ${leftTab === t ? 'text-white border-b-2 border-sky-500' : 'text-slate-500 hover:text-slate-300'}`}>
-                {t === 'books' ? 'Book' : 'Slides'}
+                {t === 'books' ? 'Book' : t === 'slides' ? 'Slides' : 'Reports'}
               </button>
             ))}
           </div>
           <div className="flex-1 min-h-0">
-            {leftTab === 'slides' && book
+            {leftTab === 'reports'
+              ? <ReportsPanel selected={reportId} onSelect={setReportId} />
+              : leftTab === 'slides' && book
               ? <SlidesPanel book={book} rangeDraft={rangeDraft} view={page} live={live ? srv.live!.page : null} onGoto={goto}
                   onSegment={n => { setCanvasMode('play'); void control('goto', book.id, n, { replay: true }); }}
                   onJoin={(p, t) => actions.onPageCard(p, { t })} onHide={p => patchPage(p.id, { hidden: !p.hidden }, true)}
@@ -405,7 +412,10 @@ export function App() {
                   onOpen={id => { void control('select', id); setLeftTab('slides'); }} onSettings={() => setSettingsOpen(true)} />}
           </div>
         </div>
-        <div className="flex-1 min-w-0 min-h-0 flex flex-col bg-[#08090c]">
+        <div className="relative flex-1 min-w-0 min-h-0 flex flex-col bg-[#08090c]">
+          {leftTab === 'reports' && (reportId
+            ? <ReportView runId={reportId} />
+            : <div className="absolute inset-0 z-20 grid place-items-center bg-[#08090c] text-[12px] text-slate-500">Pick a report on the left, or write a new one.</div>)}
           <div className="flex items-center gap-2 px-3 py-1.5 border-b border-slate-800 text-[12px]">
             <span className="font-semibold text-slate-100 truncate">{book?.title ?? 'No book open'}</span>
             {book?.source?.url && <span className="text-slate-500 truncate" title={book.source.url}>· {book.source.claims ?? 0} claims · {book.source.fallacies ?? 0} fallacies</span>}

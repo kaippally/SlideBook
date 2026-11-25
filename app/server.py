@@ -628,12 +628,50 @@ async def record_report(req):
         rep = await asyncio.to_thread(reasoning.write_report, r, request, base['result'] if base else None, language)
     except reasoning.ClaudeError as e:
         return bad(str(e), 502)
+    await asyncio.to_thread(reasoning.add_frames, r, rep['report'], db.new_id('r'))
     run = db.add_run(r['vkey'], r['id'], 'report', request, rep['model'], json.dumps(rep['report'], ensure_ascii=False),
                      {**rep['usage'], 'cost': rep['cost'], 'language': language}, base_run=base['id'] if base else None)
     if request:
         asyncio.ensure_future(asyncio.to_thread(reasoning.learn_guidance, request))
     return ok({'report': rep['report'], 'runId': run['id'], 'version': run['version'], 'url': r['url'],
                'videoId': analysis.youtube_id(r['url']), 'title': r['title']})
+
+
+@routes.get('/api/reports')
+async def reports_list(_):
+    """Every saved report, newest first, with the transcript it was written from."""
+    out = []
+    for rec in db.list_records():
+        for run in db.list_runs(rec['vkey'], 'report'):
+            try:
+                title = json.loads(run['result']).get('title', '')
+            except ValueError:
+                title = ''
+            out.append({'id': run['id'], 'version': run['version'], 'request': run['prompt'], 'title': title, 'createdAt': run['created_at'],
+                        'recordId': rec['id'], 'recordTitle': rec['title'], 'url': rec['url']})
+    return ok(sorted(out, key=lambda x: -x['createdAt']))
+
+
+@routes.get('/api/runs/{id}/report.html')
+async def run_report_html(req):
+    import report_html
+    run = db.get_run(int(req.match_info['id']))
+    if not run or run['kind'] != 'report':
+        raise web.HTTPNotFound(text='no such report')
+    rec = db.get_record(run['record_id'], full=False) or {}
+    page = report_html.render(json.loads(run['result']), url=rec.get('url', ''), video_id=analysis.youtube_id(rec.get('url') or ''),
+                              made_at=run['created_at'], request=run['prompt'], screen=req.query.get('screen') == '1')
+    return web.Response(text=page, content_type='text/html', charset='utf-8', headers={'Cache-Control': 'no-store'})
+
+
+@routes.post('/api/runs/{id}/telegram')
+async def run_to_telegram(req):
+    """StudioMate's bot prints this report to a phone PDF and sends it to the owner."""
+    run = db.get_run(int(req.match_info['id']))
+    if not run or run['kind'] != 'report':
+        return bad('no such report')
+    await relay.post({'type': 'slidebook-report', 'runId': run['id']})
+    return ok()
 
 
 @routes.get('/api/runs/{id}')
