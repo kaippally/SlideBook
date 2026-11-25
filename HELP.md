@@ -61,7 +61,8 @@ Open **📚 Reports** (the keyboard button, or the Reports tile in the app).
 - Every report comes as a **pair: English and Malayalam**. The Malayalam follows the speakers: formal Malayalam stays formal, and English words they mixed in stay in English with the Malayalam beside them.
 - Reports are written from an atheist, rationalist perspective. They never invent a quote, a fact or a time.
 - Up to six stills from the video show the moments the report points to.
-- Every report is also published, as a web page and a PDF, at **https://kaippally.github.io/K-Ai-Repo/** (the public repository github.com/kaippally/K-Ai-Repo), as soon as it is written.
+- Each report opens with the Kaipps Cafe logo, *Authored by Kaipp's AI Repo*, the copyright line and the disclaimer (built with several private and public AI models; educational material, not for sale, reuse or republication — including on YouTube — without explicit permission). The request it was written from is never printed in it.
+- A report can be published, as a web page and a PDF, at **https://kaippally.github.io/K-Ai-Repo/** (the public repository github.com/kaippally/K-Ai-Repo). Once it is public, **↗ Share** sends its link with a one-line description to any Telegram chat.
 
 <!-- for: slidebook -->
 ## 4. SlideBook on air from your phone
@@ -81,6 +82,8 @@ Every video SlideBook has transcribed, with its reports. A debate's screen also 
 - **🔁 Re-analyse** — **Refine latest** improves the newest analysis with what you write; **Fresh** starts over. The new book and both reports come to the chat.
 - **🗣 Speaker names** — give each speaker label a real name; every later analysis, report and answer uses them. After a new debate is transcribed the bot also asks you once in the chat.
 - **📝 Transcript** — the transcript every report is made from, with every time linked.
+- **Public / Private** on each report — a new report stays private; switch it to Public to put it on the K-Ai-Repo site, back to Private to take it down.
+- **Saved requests** above the New report box — every request you have written before; pick one to load it into the box and edit it.
 - **🧠 My report preferences** (top of the list) — the lasting preferences every report follows. Each report request you write updates them; edit or reset them here.
 
 After every analysis the report pair is written and sent automatically.

@@ -630,8 +630,6 @@ async def _write_reports(r, request, base, languages, deliver=None):
         run = db.add_run(r['vkey'], r['id'], 'report', request, rep['model'], json.dumps(rep['report'], ensure_ascii=False),
                          {**rep['usage'], 'cost': rep['cost'], 'language': language}, base_run=base['id'] if base else None)
         made.append({'runId': run['id'], 'version': run['version'], 'language': language, 'title': rep['report'].get('title', '')})
-        # StudioMate's bot publishes every saved report to the public K-Ai-Repo.
-        await relay.post({'type': 'slidebook-report-saved', 'runId': run['id']})
         if deliver:
             await relay.post({'type': 'slidebook-report', 'runId': run['id'], 'chatId': deliver})
     if request:
@@ -686,7 +684,7 @@ async def run_report_html(req):
         raise web.HTTPNotFound(text='no such report')
     rec = db.get_record(run['record_id'], full=False) or {}
     page = report_html.render(json.loads(run['result']), url=rec.get('url', ''), video_id=analysis.youtube_id(rec.get('url') or ''),
-                              made_at=run['created_at'], request=run['prompt'], screen=req.query.get('screen') == '1')
+                              made_at=run['created_at'], screen=req.query.get('screen') == '1')
     return web.Response(text=page, content_type='text/html', charset='utf-8', headers={'Cache-Control': 'no-store'})
 
 

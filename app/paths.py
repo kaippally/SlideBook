@@ -20,6 +20,8 @@ TOOLS = BASE / 'tools'
 SFX = BASE / 'sfx'
 # The one help file, shared with StudioMate's Telegram Mini App. Beside the exe so an edit needs no rebuild.
 HELP = BASE / 'HELP.md'
+# The Kaipps Cafe logo every report carries at the top.
+LOGO = BASE / 'branding' / 'KaippsCafe.svg'
 USER_SFX = DATA / 'sfx'
 DB_FILE = DATA / 'slidebook.db'
 PORT = 8780

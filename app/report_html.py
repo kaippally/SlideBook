@@ -2,9 +2,12 @@
 page to page, every point with a colour tag, its speaker and a linked timestamp, and the video frames
 Claude chose for context. The Reports tab shows this page and StudioMate's bot prints it to PDF — one
 renderer, so the screen and the PDF never drift apart."""
+import base64
 import html
 import re
 import time
+
+from paths import LOGO
 
 TAG_COLOR = [
     (r'FALSE|DODGE|CONTRADICT|WRONG|ERROR|OMISSION', '#dc2626'), (r'MISLEAD', '#ea580c'), (r'PARTLY|PARTIAL|UNEVEN|WEAK', '#ca8a04'),
@@ -59,14 +62,33 @@ h2 { font-size: 20px; margin: 22px 0 10px; padding-bottom: 4px; border-bottom: 3
 .conclusion b { display: block; margin-bottom: 4px; letter-spacing: .06em; font-size: 13px; color: #94a3b8 }
 .ts { color: #0369a1; font-weight: 600; text-decoration: none; border-bottom: 1px solid currentColor; white-space: nowrap }
 .conclusion .ts { color: #7dd3fc }
-.ask { margin: 0 0 14px; font-size: 12px; color: #64748b; font-style: italic }
+.brand { display: flex; gap: 12px; align-items: center; padding: 0 0 12px; margin: 0 0 14px; border-bottom: 1px solid #e2e8f0; break-inside: avoid }
+.brand img { width: 62px; height: 62px; flex: none }
+.brand b { display: block; font-size: 15px; color: #0f172a }
+.brand span { display: block; font-size: 12px; color: #475569 }
+.disclaimer { font-size: 11px; line-height: 1.45; color: #475569; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px 10px; margin: 0 0 16px; break-inside: avoid }
 '''
 
 
 INLINE_TIME = re.compile(r'(?<![\d:])(\d{1,2}:\d{2}:\d{2})(?![\d:])')
 
 
-def render(rep, url='', video_id=None, made_at=None, request='', screen=False):
+AUTHOR = "Kaipp's AI Repo"
+OWNER = 'Nishad Kaippally (Kaipps Cafe)'
+DISCLAIMER = ('This report was built with several private and public AI models. It is educational material: not for sale, '
+              'and not to be reused or republished, including on any YouTube channel, without explicit permission.')
+
+
+def _logo():
+    try:
+        return 'data:image/svg+xml;base64,' + base64.b64encode(LOGO.read_bytes()).decode()
+    except OSError:
+        return ''
+
+
+def render(rep, url='', video_id=None, made_at=None, screen=False):
+    if video_id:
+        url = f'https://www.youtube.com/watch?v={video_id}'   # never the share link with its si= tracker
     def link(t):
         return f'https://www.youtube.com/watch?v={video_id}&t={_secs(t)}s' if video_id and t else ''
 
@@ -95,11 +117,16 @@ def render(rep, url='', video_id=None, made_at=None, request='', screen=False):
                        + ''.join(item(it) for it in s.get('items') or []) + '</section>' for s in rep.get('sections') or [])
     stamp = time.strftime('%Y-%m-%d %H:%M', time.localtime(made_at or time.time()))
     summary = ''.join(f'<p>{txt(p)}</p>' for p in rep.get('summary') or [])
+    logo = _logo()
+    year = time.strftime('%Y', time.localtime(made_at or time.time()))
+    # At the very top of every report, screen and PDF alike: who made it, who owns it, and what it is not for.
+    brand = (f'<div class="brand">{f"<img src=\"{logo}\" alt=\"Kaipps Cafe\">" if logo else ""}'
+             f'<div><b>Authored by {_e(AUTHOR)}</b><span>© {year} {_e(OWNER)}. All rights reserved.</span></div></div>'
+             f'<p class="disclaimer">{_e(DISCLAIMER)}</p>')
     return f'''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>{_e(rep.get("title"))}</title>
 {'<base target="_blank">' if screen else ''}<style>{faces}{CSS}</style></head><body class="{'screen' if screen else ''}">
-<h1>{_e(rep.get("title"))}</h1>{f'<p class="sub">{_e(rep["subtitle"])}</p>' if rep.get('subtitle') else ''}
+{brand}<h1>{_e(rep.get("title"))}</h1>{f'<p class="sub">{_e(rep["subtitle"])}</p>' if rep.get('subtitle') else ''}
 <div class="src">{f'<a href="{_e(url)}">{_e(url)}</a> · ' if url else ''}{_e(stamp)}</div>
-{f'<p class="ask">Asked: {_e(request)}</p>' if request else ''}
 {f'<img class="cover" src="{_e(rep["cover"])}" alt="">' if rep.get('cover') else ''}
 {f'<div class="summary">{summary}</div>' if summary else ''}
 {sections}
