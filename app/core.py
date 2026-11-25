@@ -450,6 +450,51 @@ def brief(opts):
 FULL_EXAMINE = ['claims', 'fallacies', 'answers', 'moderation', 'tally', 'contradictions']
 
 
+class Stages:
+    """A job's progress as the sender reads it: 'Step 3 of 5 — Transcribing: who said what, part 12 of 104 · 41%'.
+    The plan is fixed when the job starts, so N never changes; a stage that turns out not to be needed is
+    skipped over and the percentage simply jumps. Weights are rough shares of the usual run time."""
+
+    PLANS = {
+        'link': [('read', 'Reading the link', 2), ('download', 'Downloading the video', 8), ('transcribe', 'Transcribing', 45),
+                 ('analyse', 'Claude is analysing', 40), ('book', 'Making the slide book', 5)],
+        'transcribe': [('read', 'Reading the link', 5), ('download', 'Downloading the video', 15), ('transcribe', 'Transcribing', 80)],
+        'reanalyse': [('analyse', 'Claude is analysing', 90), ('book', 'Making the slide book', 10)],
+    }
+
+    def __init__(self, progress, plan):
+        self.progress, self.plan = progress, self.PLANS[plan]
+        self.total = sum(w for *_, w in self.plan)
+
+    def __call__(self, key, detail='', frac=0.0):
+        i = next(n for n, (k, _, _) in enumerate(self.plan) if k == key)
+        done = sum(w for _, _, w in self.plan[:i]) + self.plan[i][2] * min(max(frac, 0.0), 1.0)
+        self.progress(f'Step {i + 1} of {len(self.plan)} — {self.plan[i][1]}{": " + detail if detail else ""} · {int(100 * done / self.total)}%')
+
+    def ticking(self, key, detail, expected_sec, fn):
+        """Run fn while the stage reports elapsed time against an estimate every 20 s — Claude gives no
+        progress of its own. Capped at 95% of the stage, so the bar never claims it is done before it is."""
+        import threading
+        t0, stop = time.time(), threading.Event()
+
+        def tick():
+            while not stop.wait(20):
+                left = max(0, expected_sec - (time.time() - t0))
+                self(key, f'{detail} — about {max(1, round(left / 60))} min left' if left > 30 else f'{detail} — nearly done',
+                     min(0.95, (time.time() - t0) / expected_sec))
+        self(key, detail)
+        threading.Thread(target=tick, daemon=True).start()
+        try:
+            return fn()
+        finally:
+            stop.set()
+
+
+def _claude_sec(rec):
+    # Measured: ~280 s for a 104-minute debate on Opus.
+    return 60 + 2.1 * (rec.get('duration') or 3600) / 60
+
+
 def video_key(url):
     """One name for a video across every link to it: the YouTube id, else the link without its query."""
     vid = analysis.youtube_id(url)
@@ -461,11 +506,11 @@ def _stance_line(stance):
     return stance.get('standing', '') if stance.get('id') not in ('neutral', 'rationalist') else ''
 
 
-def _claude_cards(rec, brief_text, language, examine, base=None, max_claims=25, progress=None):
+def _claude_cards(rec, brief_text, language, examine, base=None, max_claims=25, stages=None):
     import reasoning
-    if progress:
-        progress(f'Claude is analysing record v{rec["version"]} ({language})' + (f' — refining v{base["version"]}' if base else ''))
-    res = reasoning.analyse(rec, brief_text, language=language, examine=examine, base=base, max_claims=max_claims)
+    detail = f'transcript v{rec["version"]}, {language}' + (f', refining v{base["version"]}' if base else '')
+    run_claude = lambda: reasoning.analyse(rec, brief_text, language=language, examine=examine, base=base, max_claims=max_claims)
+    res = stages.ticking('analyse', detail, _claude_sec(rec), run_claude) if stages else run_claude()
     cards = analysis.build_debate_cards(res, rec['lines'], examine)
     run = db.add_run(rec['vkey'], rec['id'], 'analyse', brief_text, res['model'], res['raw'],
                      {**res['usage'], 'cost': res['cost'], 'examine': examine, 'language': language},
@@ -475,6 +520,7 @@ def _claude_cards(rec, brief_text, language, examine, base=None, max_claims=25, 
 
 def _reanalyse_job(opts, crit, progress):
     """A fresh Claude pass over a saved record — no download, no transcription."""
+    stages = Stages(progress, 'reanalyse')
     rec = db.get_record(int(opts['recordId']))
     if not rec:
         raise analysis.AnalysisError('That record no longer exists.')
@@ -484,7 +530,8 @@ def _reanalyse_job(opts, crit, progress):
     examine = opts.get('examine') or last_usage.get('examine') or (FULL_EXAMINE if rec['kind'] == 'debate' else ['claims', 'fallacies'])
     language = opts.get('language') or last_usage.get('language') or analysis.lang_for(crit.get('language'), rec['lang'])
     res, cards, run = _claude_cards(rec, opts.get('prompt', ''), language, examine, base=base,
-                                    max_claims=int(crit.get('maxResults') or 25), progress=progress)
+                                    max_claims=int(crit.get('maxResults') or 25), stages=stages)
+    stages('book', f'{len(cards)} cards')
     vid = analysis.youtube_id(rec['url'])
     source = {'url': rec['url'], 'title': f'{rec["title"] or rec["url"]} — v{run["version"]}', 'duration': rec['duration'],
               'videoId': vid, 'start': 0, 'platform': 'youtube' if vid else 'other', 'video': rec['video'],
@@ -504,7 +551,8 @@ def process_job(job, progress):
         return _reanalyse_job(opts, crit, progress)
     if opts.get('video'):
         return _process_range_job(opts, crit, stance, progress)
-    progress('Reading the link')
+    stages = Stages(progress, 'transcribe' if opts.get('transcribeOnly') else 'link')
+    stages('read')
     meta = analysis.probe(url)
     vid = analysis.youtube_id(url)
     source = {'url': url, 'title': meta['title'], 'uploader': meta['uploader'], 'duration': meta['duration'],
@@ -515,20 +563,21 @@ def process_job(job, progress):
     # labelled record serves a plain analysis too.
     rec = db.latest_record(video_key(url))
     if rec and (rec['kind'] == 'debate' or not debate):
-        progress(f'Using the saved record v{rec["version"]} — no new transcription')
         if opts.get('transcribeOnly'):
+            stages('transcribe', f'reusing the saved transcript v{rec["version"]}', 1)
             return {'madeRecord': rec['id'], 'title': rec['title']}, None
         if rec['video'] and (MEDIA / rec['video'][len('/media/'):]).exists():
             source['video'] = rec['video']
         else:
-            progress('Downloading the video')
+            stages('download')
             source['video'] = f'/media/video/{analysis.download_media(url, f"job{job["id"]}").name}'
-        return _analyse_record(rec, source, opts, crit, stance, debate, progress)
+        stages('transcribe', f'reusing the saved transcript v{rec["version"]}', 1)
+        return _analyse_record(rec, source, opts, crit, stance, debate, stages)
     rec = None
 
     tr = None
     if vid:
-        progress('Fetching captions')
+        stages('read', 'looking for captions', 0.5)
         try:
             tr = analysis.youtube_captions(vid)
         except Exception as e:
@@ -541,7 +590,7 @@ def process_job(job, progress):
     import videos   # videos imports core
     known = None if debate else videos.transcribed(url)
     if known:
-        progress('Already transcribed — reusing the library copy')
+        stages('transcribe', 'reusing the library transcript', 1)
         tr = db.get_video(known['id'], full=True)['transcript']
     # A finished transcription is kept with the job, so a retry after a failed analysis does not pay
     # for (or wait on) the transcription again.
@@ -553,13 +602,15 @@ def process_job(job, progress):
         path = videos._file(known)
         source['video'] = known['video']
     else:
-        progress('Downloading the video')
+        stages('download')
         path = analysis.download_media(url, f'job{job["id"]}')
         source['video'] = f'/media/video/{path.name}'
     if not tr:
-        progress('Transcribing who said what' if debate else 'Transcribing with Gemini')
+        what = 'who said what' if debate else 'with Gemini'
+        stages('transcribe', what)
         who = ' '.join(p for p in (opts.get('speakers'), opts.get('context') and f"(background: {opts['context']})") if p)
-        tr = analysis.gemini_transcribe(path, speakers=who if debate else None, progress=progress)
+        tr = analysis.gemini_transcribe(path, speakers=who if debate else None,
+                                        on_part=lambda n, total: stages('transcribe', f'{what}, part {n} of {total}', n / total))
         tr_cache.write_text(json.dumps(tr, ensure_ascii=False), encoding='utf-8')
     if not tr or not tr['lines']:
         raise analysis.AnalysisError('No speech found to analyse.')
@@ -576,14 +627,15 @@ def process_job(job, progress):
                          'speakers': speakers, 'url': url})
     if opts.get('transcribeOnly'):
         return {'madeRecord': rec['id'], 'title': rec['title']}, None
-    return _analyse_record(rec, source, opts, crit, stance, debate, progress)
+    return _analyse_record(rec, source, opts, crit, stance, debate, stages)
 
 
-def _analyse_record(rec, source, opts, crit, stance, debate, progress):
+def _analyse_record(rec, source, opts, crit, stance, debate, stages):
     language = analysis.lang_for(opts.get('language') or crit.get('language'), rec['lang'])
     examine = (opts.get('examine') or FULL_EXAMINE) if debate else ['claims', 'fallacies']
     brief_text = '\n'.join(p for p in (brief(opts), _stance_line(stance)) if p)
-    res, cards, run = _claude_cards(rec, brief_text, language, examine, max_claims=int(crit.get('maxResults') or 25), progress=progress)
+    res, cards, run = _claude_cards(rec, brief_text, language, examine, max_claims=int(crit.get('maxResults') or 25), stages=stages)
+    stages('book', f'{len(cards)} cards')
     source.update(lines=rec['lines'], langCode=rec['lang'], transcriptVia=rec['via'], generated=True, speakers=rec['speakers'],
                   recordId=rec['id'], runId=run['id'], analysedAt=time.time(), model=res['model'], language=language,
                   stance=stance['name'], kind=opts.get('kind') or 'single', claims=len(res['claims']),

@@ -148,7 +148,7 @@ SlideBook has no bot of its own. Links arrive through **StudioMate's bot** (@Kai
 - background, and what the sender expects;
 - whether to start a new book or add to the book on air.
 
-The bot POSTs the link and the answers to `/api/analyse` (`origin: studiomate-bot`, with a `notify` address). `app/relay.py` posts each step back to the bot's event server (`http://127.0.0.1:5001/event`, overridable with `STUDIOMATE_BOT_EVENT_URL`), and the bot edits one status message. When the book is ready, that message gets **▶ Put on air**. `/sb next`, `/sb prev` and `/sb live` step the book on air. The StudioMate side is described in its `data/docs/MODULES/TELEGRAM.md` §7.4.2.
+The bot POSTs the link and the answers to `/api/analyse` (`origin: studiomate-bot`, with a `notify` address). Each step is reported as `Step i of N — <stage>: <detail> · P%` (`core.Stages`: a fixed plan per job kind — link, transcribe-only, re-analyse — with weighted stages; transcription advances per one-minute part, Claude's stage by elapsed time against an estimate of 60 s + 2.1 s per minute of video, capped at 95%). `app/relay.py` posts each step back to the bot's event server (at most one edit per 20 s within a stage) (`http://127.0.0.1:5001/event`, overridable with `STUDIOMATE_BOT_EVENT_URL`), and the bot edits one status message. When the book is ready, that message gets **▶ Put on air**. `/sb next`, `/sb prev` and `/sb live` step the book on air. The StudioMate side is described in its `data/docs/MODULES/TELEGRAM.md` §7.4.2.
 
 #### 4.5.1 Fallback bot
 

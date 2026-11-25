@@ -185,7 +185,7 @@ def normalize_audio(path: Path) -> Path:
 PART_SEC = 60   # Gemini's clock drifts within a request; in 5-minute parts captions ran up to ~20 s off the speech
 
 
-def gemini_transcribe(path: Path, speakers=None, progress=None):
+def gemini_transcribe(path: Path, speakers=None, progress=None, on_part=None):
     """No caption track, or a debate that needs to know who said what: have Gemini listen and return
     timestamped lines. `speakers` (a hint such as "A = host, B = guest", or '' to detect) labels each line.
 
@@ -221,7 +221,9 @@ def gemini_transcribe(path: Path, speakers=None, progress=None):
             if _part_ok(raw, spans[i]):
                 break
         done[0] += 1
-        if progress:
+        if on_part:
+            on_part(done[0], len(parts))
+        elif progress:
             progress(f'Transcribing{" who said what" if speakers is not None else ""} — part {done[0]} of {len(parts)}')
         return data, raw
 
