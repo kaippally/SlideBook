@@ -612,34 +612,51 @@ async def record_ask(req):
     return ok({'answer': a['answer'], 'runId': run['id'], 'url': r['url'], 'videoId': analysis.youtube_id(r['url']), 'title': r['title']})
 
 
+async def _write_reports(r, request, base, languages, deliver=None):
+    """Claude writes each report in turn (the second reads the record from the prompt cache). With
+    `deliver` (a Telegram chat id) each one goes to StudioMate's bot as soon as it is saved."""
+    import reasoning
+    made = []
+    for language in languages:
+        try:
+            rep = await asyncio.to_thread(reasoning.write_report, r, request, base['result'] if base else None, language)
+        except reasoning.ClaudeError as e:
+            if deliver:
+                await relay.post({'type': 'slidebook-report', 'chatId': deliver, 'error': str(e), 'title': r['title']})
+            if made or deliver:
+                break
+            raise
+        await asyncio.to_thread(reasoning.add_frames, r, rep['report'], db.new_id('r'))
+        run = db.add_run(r['vkey'], r['id'], 'report', request, rep['model'], json.dumps(rep['report'], ensure_ascii=False),
+                         {**rep['usage'], 'cost': rep['cost'], 'language': language}, base_run=base['id'] if base else None)
+        made.append({'runId': run['id'], 'version': run['version'], 'language': language, 'title': rep['report'].get('title', '')})
+        if deliver:
+            await relay.post({'type': 'slidebook-report', 'runId': run['id'], 'chatId': deliver})
+    if request:
+        asyncio.ensure_future(asyncio.to_thread(reasoning.learn_guidance, request))
+    return made
+
+
 @routes.post('/api/records/{id}/report')
 async def record_report(req):
     """A phone report written by Claude from the record and an analysis (the given run, else the newest),
     shaped by the free-text request and the learned report preferences. The request is then folded into
-    those preferences, so the next report starts closer to what is wanted."""
+    those preferences, so the next report starts closer to what is wanted. Always English then Malayalam
+    unless one language is named. With `deliver` it answers at once and the PDFs follow in Telegram."""
     import reasoning
     r = record_or_404(req.match_info['id'])
     body = await req.json()
     request = (body.get('request') or '').strip()
     runs = db.list_runs(r['vkey'], 'analyse')
     base = db.get_run(int(body['runId'])) if body.get('runId') else (runs[0] if runs else None)
-    # Every report is made in English and Malayalam, one after the other so the second reads the record
-    # from the prompt cache. A single language can still be asked for by name.
     languages = [body['language']] if body.get('language') in ('English', 'Malayalam') else ['English', 'Malayalam']
-    made = []
-    for language in languages:
-        try:
-            rep = await asyncio.to_thread(reasoning.write_report, r, request, base['result'] if base else None, language)
-        except reasoning.ClaudeError as e:
-            if made:
-                break
-            return bad(str(e), 502)
-        await asyncio.to_thread(reasoning.add_frames, r, rep['report'], db.new_id('r'))
-        run = db.add_run(r['vkey'], r['id'], 'report', request, rep['model'], json.dumps(rep['report'], ensure_ascii=False),
-                         {**rep['usage'], 'cost': rep['cost'], 'language': language}, base_run=base['id'] if base else None)
-        made.append({'runId': run['id'], 'version': run['version'], 'language': language, 'title': rep['report'].get('title', '')})
-    if request:
-        asyncio.ensure_future(asyncio.to_thread(reasoning.learn_guidance, request))
+    if body.get('deliver'):
+        asyncio.ensure_future(_write_reports(r, request, base, languages, int(body['deliver'])))
+        return ok({'queued': True, 'languages': languages, 'title': r['title']})
+    try:
+        made = await _write_reports(r, request, base, languages)
+    except reasoning.ClaudeError as e:
+        return bad(str(e), 502)
     return ok({'reports': made, 'runId': made[0]['runId'], 'url': r['url'], 'videoId': analysis.youtube_id(r['url']), 'title': r['title']})
 
 
@@ -673,11 +690,12 @@ async def run_report_html(req):
 
 @routes.post('/api/runs/{id}/telegram')
 async def run_to_telegram(req):
-    """StudioMate's bot prints this report to a phone PDF and sends it to the owner."""
+    """StudioMate's bot prints this report to a phone PDF and sends it to `chatId`, else the owner."""
     run = db.get_run(int(req.match_info['id']))
     if not run or run['kind'] != 'report':
         return bad('no such report')
-    await relay.post({'type': 'slidebook-report', 'runId': run['id']})
+    chat = ((await req.json()) if req.can_read_body else {}).get('chatId')
+    await relay.post({'type': 'slidebook-report', 'runId': run['id'], **({'chatId': int(chat)} if chat else {})})
     return ok()
 
 

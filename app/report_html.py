@@ -57,13 +57,23 @@ h2 { font-size: 20px; margin: 22px 0 10px; padding-bottom: 4px; border-bottom: 3
 .frame { width: 100%; border-radius: 8px; margin: 8px 0 2px; display: block }
 .conclusion { margin-top: 22px; padding: 12px 14px; border-radius: 10px; background: #0f172a; color: #f8fafc; break-inside: avoid }
 .conclusion b { display: block; margin-bottom: 4px; letter-spacing: .06em; font-size: 13px; color: #94a3b8 }
+.ts { color: #0369a1; font-weight: 600; text-decoration: none; border-bottom: 1px solid currentColor; white-space: nowrap }
+.conclusion .ts { color: #7dd3fc }
 .ask { margin: 0 0 14px; font-size: 12px; color: #64748b; font-style: italic }
 '''
+
+
+INLINE_TIME = re.compile(r'(?<![\d:])(\d{1,2}:\d{2}:\d{2})(?![\d:])')
 
 
 def render(rep, url='', video_id=None, made_at=None, request='', screen=False):
     def link(t):
         return f'https://www.youtube.com/watch?v={video_id}&t={_secs(t)}s' if video_id and t else ''
+
+    # Every timestamp anywhere in the text links to that moment of the video, not just each point's own.
+    def txt(s):
+        out = _e(s)
+        return INLINE_TIME.sub(lambda m: f'<a class="ts" href="{_e(link(m[1]))}">{m[1]}</a>', out) if video_id else out
 
     def when(it):
         if not it.get('t'):
@@ -77,14 +87,14 @@ def render(rep, url='', video_id=None, made_at=None, request='', screen=False):
                (f'<span class="who">{_e(it["speaker"])}</span>' if it.get('speaker') else '') + when(it)
         img = f'<img class="frame" src="{_e(it["image"])}" alt="">' if it.get('image') else ''
         return (f'<div class="item" style="--c:{_color(it.get("tag"))}"><div class="meta">{meta}</div>'
-                f'<div class="headline">{_e(it.get("headline"))}</div>{img}<div class="text">{_e(it.get("text"))}</div></div>')
+                f'<div class="headline">{txt(it.get("headline"))}</div>{img}<div class="text">{txt(it.get("text"))}</div></div>')
 
     faces = '\n'.join(f"@font-face {{ font-family: 'Noto Sans Malayalam'; font-weight: {w}; src: url('/api/titles/fonts/NotoSansMalayalam-{n}.ttf') }}"
                       for n, w in FACES.items())
-    sections = ''.join(f'<section><h2>{_e(s.get("heading"))}</h2>' + (f'<p class="intro">{_e(s["intro"])}</p>' if s.get('intro') else '')
+    sections = ''.join(f'<section><h2>{_e(s.get("heading"))}</h2>' + (f'<p class="intro">{txt(s["intro"])}</p>' if s.get('intro') else '')
                        + ''.join(item(it) for it in s.get('items') or []) + '</section>' for s in rep.get('sections') or [])
     stamp = time.strftime('%Y-%m-%d %H:%M', time.localtime(made_at or time.time()))
-    summary = ''.join(f'<p>{_e(p)}</p>' for p in rep.get('summary') or [])
+    summary = ''.join(f'<p>{txt(p)}</p>' for p in rep.get('summary') or [])
     return f'''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>{_e(rep.get("title"))}</title>
 {'<base target="_blank">' if screen else ''}<style>{faces}{CSS}</style></head><body class="{'screen' if screen else ''}">
 <h1>{_e(rep.get("title"))}</h1>{f'<p class="sub">{_e(rep["subtitle"])}</p>' if rep.get('subtitle') else ''}
@@ -93,5 +103,5 @@ def render(rep, url='', video_id=None, made_at=None, request='', screen=False):
 {f'<img class="cover" src="{_e(rep["cover"])}" alt="">' if rep.get('cover') else ''}
 {f'<div class="summary">{summary}</div>' if summary else ''}
 {sections}
-{f'<div class="conclusion"><b>CONCLUSION</b>{_e(rep["conclusion"])}</div>' if rep.get('conclusion') else ''}
+{f'<div class="conclusion"><b>CONCLUSION</b>{txt(rep["conclusion"])}</div>' if rep.get('conclusion') else ''}
 </body></html>'''

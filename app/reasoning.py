@@ -272,6 +272,7 @@ THE OPERATOR'S LASTING PREFERENCES FOR REPORTS (always follow them):
 Rules:
 - Base every point on the record; use the earlier analysis as a starting point, not as the last word — correct it where the record says otherwise.
 - "t" is the [HH:MM:SS] of the record line a point refers to.
+- Any time you mention inside the text (summary, intro, item text, conclusion) is written exactly as HH:MM:SS (e.g. 00:57:01, never 57:01 or "57 minutes in") — each one becomes a link to that moment of the video.
 - Set "frame": true on at most 6 points where a still from the video at that moment adds context; the frames are taken from the video for you.
 - Follow the LANGUAGE rules given at the end for every field. Plain text in every field — no Markdown.'''
     # The record (and analysis) come first and the language last, so the second report of a pair reads
