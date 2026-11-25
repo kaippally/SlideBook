@@ -680,10 +680,11 @@ def _report_book(run, rec):
     """The slide book a report's tally comes from: the book of the analysis it was written from, else the
     newest analysed book of the same video. The tally is read from it live, so a correction made to the
     book in SlideBook shows in the report — on screen, in a PDF printed afterwards and on the public site."""
-    base = db.get_run(run['base_run']) if run.get('base_run') else None
-    bid = base and base.get('book_id')
-    if not bid:
-        bid = next((x['book_id'] for x in db.list_runs(rec.get('vkey') or run['vkey'], 'analyse') if x.get('book_id')), None)
+    # The video's newest analysed book wins, so a re-analysis (better speaker attribution, say) replaces the
+    # tally of every report already written; the report's own base analysis is the fallback.
+    bid = next((x['book_id'] for x in db.list_runs(rec.get('vkey') or run['vkey'], 'analyse') if x.get('book_id') and db.get_book(x['book_id'])), None)
+    if not bid and run.get('base_run'):
+        bid = (db.get_run(run['base_run']) or {}).get('book_id')
     return db.get_book(bid) if bid else None
 
 

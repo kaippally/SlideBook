@@ -521,6 +521,10 @@ def _claude_cards(rec, brief_text, language, examine, base=None, max_claims=25, 
     detail = f'transcript v{rec["version"]}, {language}' + (f', refining v{base["version"]}' if base else '')
     run_claude = lambda: reasoning.analyse(rec, brief_text, language=language, examine=examine, base=base, max_claims=max_claims)
     res = stages.ticking('analyse', detail, _claude_sec(rec), run_claude) if stages else run_claude()
+    # The names Claude worked out become the record's speaker names, unless the operator already set some.
+    found = {s['label']: s['name'] for s in res.get('speakers') or [] if s.get('label') in (rec.get('speakers') or []) and s.get('name')}
+    if found and not rec.get('names'):
+        db.set_record_names(rec['id'], found)
     cards = analysis.build_debate_cards(res, rec['lines'], examine)
     run = db.add_run(rec['vkey'], rec['id'], 'analyse', brief_text, res['model'], res['raw'],
                      {**res['usage'], 'cost': res['cost'], 'examine': examine, 'language': language},
@@ -715,6 +719,9 @@ async def worker():
                 await book_changed(book_id)
             if source.get('runId'):
                 db.set_run_book(source['runId'], book_id)
+                # A new analysis gives its video's reports a new tally; public copies are republished.
+                import relay
+                await relay.post({'type': 'slidebook-book-corrected', 'bookId': book_id})
             db.update_job(job['id'], status='done', step=f'{source["claims"]} claims, {source["fallacies"]} fallacies', book_id=book_id, error='')
         except Exception as e:
             log.warning('job %s failed: %s', job['id'], traceback.format_exc())

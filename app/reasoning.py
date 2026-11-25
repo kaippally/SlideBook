@@ -138,8 +138,11 @@ _T = {'type': 'string', 'description': 'HH:MM:SS, copied from the record line'}
 _S = {'type': 'string'}
 ANALYSIS_SCHEMA = {
     'type': 'object', 'additionalProperties': False,
-    'required': ['claims', 'fallacies', 'exchanges', 'contradictions', 'moderation'],
+    'required': ['speakers', 'claims', 'fallacies', 'exchanges', 'contradictions', 'moderation'],
     'properties': {
+        'speakers': {'type': 'array', 'description': 'Each transcript label that is consistently ONE real person, with that name',
+                     'items': {'type': 'object', 'additionalProperties': False, 'required': ['label', 'name'],
+                               'properties': {'label': _S, 'name': _S}}},
         'claims': {'type': 'array', 'items': {'type': 'object', 'additionalProperties': False,
                    'required': ['t', 'speaker', 'claim', 'verdict', 'severity', 'explanation', 'sources'],
                    'properties': {'t': _T, 'tEnd': _T, 'speaker': _S, 'claim': _S,
@@ -189,7 +192,8 @@ Your task: analyse the whole record below, knowing the context of the entire con
 
 Rules:
 - Every "t" is the [HH:MM:SS] of the record line where the item happens (for an exchange: where the question is asked); "tEnd" is the line where it ends.
-- Speaker names exactly as the record gives them.
+- WHO SAID IT. The record's speaker labels come from automatic transcription: they can be generic ("Speaker 1"), and they can be WRONG — one label may cover two different people, or one person may move between labels. Work out who is actually speaking from the content: introductions, the moderator naming people, the positions argued, the video title. Write real names (as in the title or as introduced; "Moderator" if unnamed) in every speaker, asker and answerer field, and attribute every claim, fallacy, exchange and contradiction to the person who actually said it — never just to the label. Use exactly the same spelling of a name everywhere.
+- "speakers": list each transcript label that is consistently one real person, with that name. Leave out a label that mixes people.
 - At most {max_claims} claims — the ones that matter to the argument. Leave any list you were not asked for empty, and "moderation" null unless asked.'''
     parts = [_header(rec), 'RECORD:', record_text(rec)]
     if base:
@@ -210,6 +214,7 @@ Rules:
         'contradictions': [{**c, 'timestampMs': _ms(c['t']), 'earlierMs': _ms(c.get('earlierT'))}
                            for c in d.get('contradictions') or []] if 'contradictions' in examine else [],
         'moderation': d.get('moderation') if 'moderation' in examine else None,
+        'speakers': d.get('speakers') or [],
     }
     res.update(language=language, model=r['model'], usage=r['usage'], cost=r['cost'], raw=json.dumps(d, ensure_ascii=False))
     return res
