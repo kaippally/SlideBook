@@ -50,9 +50,11 @@ Send a photo and the bot asks which slide book to put it in — an existing one 
 Open **📚 Reports** (the keyboard button, or the Reports tile in the app).
 
 1. The list shows every debate that has a report, with its YouTube thumbnail. Search by title.
-2. Tap a debate to see its reports. Each one has its cover picture and a language badge: **EN** or **മലയാളം**.
-3. Tap a report to read it. **Every time in a report is a link** — tap it and YouTube opens at that moment.
-4. **PDF** on a report (or the button at the bottom while reading) sends it to your chat as a PDF made for a phone.
+2. Tap a debate to see its reports. Each report is one entry with its cover picture and title, and a line for each language — **EN** and **മലയാളം** — with **Read**, **PDF** and, once it is public, **↗ Share**.
+3. **Read** opens it. **Every time in a report is a link** — tap it and YouTube opens at that moment.
+4. **PDF** (or the button at the bottom while reading) sends it to your chat as a PDF made for a phone.
+
+The public website lists them the same way: one entry per report, with English and Malayalam each as a web page and a PDF.
 
 <!-- for: reports -->
 ### 3.1 What a report is
