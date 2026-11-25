@@ -66,6 +66,12 @@ h2 { font-size: 20px; margin: 22px 0 10px; padding-bottom: 4px; border-bottom: 3
 .brand img { width: 62px; height: 62px; flex: none }
 .brand b { display: block; font-size: 15px; color: #0f172a }
 .brand span { display: block; font-size: 12px; color: #475569 }
+.tally { break-inside: avoid }
+.tally-who { margin: 0 0 12px; break-inside: avoid }
+.tally-who > b { display: block; font-size: 16px; margin-bottom: 4px }
+.tally-row { display: flex; flex-wrap: wrap; gap: 6px }
+.chip { display: inline-flex; align-items: center; gap: 6px; border: 1.5px solid var(--c); border-radius: 999px; padding: 2px 10px 2px 3px; font-size: 13px }
+.chip i { font-style: normal; font-weight: 800; color: #fff; background: var(--c); border-radius: 999px; min-width: 22px; text-align: center; padding: 0 6px }
 .disclaimer { font-size: 11px; line-height: 1.45; color: #475569; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px 10px; margin: 0 0 16px; break-inside: avoid }
 '''
 
@@ -86,7 +92,29 @@ def _logo():
         return ''
 
 
-def render(rep, url='', video_id=None, made_at=None, screen=False):
+# The final tally: counted by software from the slide book's cards, never written by the model.
+TALLY_COLS = [('FALLACY', 'Fallacies', 'ഫാലസികൾ'), ('FALSE', 'False', 'തെറ്റ്'), ('MISLEADING', 'Misleading', 'തെറ്റിദ്ധരിപ്പിക്കുന്നത്'),
+              ('PARTLY TRUE', 'Partly true', 'ഭാഗികമായി ശരി'), ('TRUE', 'True', 'ശരി'), ('UNPROVEN', 'Unproven', 'തെളിയിക്കാത്തത്'),
+              ('DODGED', 'Dodged questions', 'ഒഴിഞ്ഞുമാറിയ ചോദ്യങ്ങൾ'), ('PARTIAL', 'Partly answered', 'ഭാഗികമായ മറുപടി'),
+              ('ANSWERED', 'Answered', 'മറുപടി നൽകി'), ('CONTRADICTION', 'Contradictions', 'സ്വയം വൈരുദ്ധ്യം')]
+
+
+def _tally_html(rows, ml):
+    cols = [c for c in TALLY_COLS if any(r.get(c[0]) for r in rows)]
+    if not cols:
+        return ''
+    head = 'അന്തിമ കണക്ക് (Final tally)' if ml else 'Final tally'
+    note = ('സ്ലൈഡ് ബുക്കിലെ കാർഡുകളിൽ നിന്ന് എണ്ണിയത്; SlideBook-ൽ ഒരു കാർഡ് തിരുത്തിയാൽ ഈ കണക്കും മാറും.' if ml else
+            'Counted from the slide book\'s cards. A card corrected in SlideBook changes this tally too.')
+    blocks = ''.join(
+        f'<div class="tally-who"><b>{_e(r["speaker"])}</b><div class="tally-row">'
+        + ''.join(f'<span class="chip" style="--c:{_color(key)}"><i>{r.get(key, 0)}</i>{_e(f"{ml_l} ({en})" if ml else en)}</span>'
+                  for key, en, ml_l in cols if r.get(key))
+        + '</div></div>' for r in rows)
+    return f'<section class="tally"><h2>{head}</h2><p class="intro">{_e(note)}</p>{blocks}</section>'
+
+
+def render(rep, url='', video_id=None, made_at=None, screen=False, tally=None, language=''):
     if video_id:
         url = f'https://www.youtube.com/watch?v={video_id}'   # never the share link with its si= tracker
     def link(t):
@@ -130,5 +158,6 @@ def render(rep, url='', video_id=None, made_at=None, screen=False):
 {f'<img class="cover" src="{_e(rep["cover"])}" alt="">' if rep.get('cover') else ''}
 {f'<div class="summary">{summary}</div>' if summary else ''}
 {sections}
+{_tally_html(tally, language == 'Malayalam') if tally else ''}
 {f'<div class="conclusion"><b>CONCLUSION</b>{txt(rep["conclusion"])}</div>' if rep.get('conclusion') else ''}
 </body></html>'''

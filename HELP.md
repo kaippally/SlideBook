@@ -63,6 +63,8 @@ The public website lists them the same way: one entry per report, with English a
 - Every report comes as a **pair: English and Malayalam**. The Malayalam follows the speakers: formal Malayalam stays formal, and English words they mixed in stay in English with the Malayalam beside them.
 - Reports are written from an atheist, rationalist perspective. They never invent a quote, a fact or a time.
 - Up to six stills from the video show the moments the report points to.
+- Every report ends with a **Final tally** per speaker — fallacies, false and misleading claims, dodged questions, contradictions — counted by the software from the slide book's cards, not written by the AI.
+- **Corrections carry everywhere.** Change a card in SlideBook (its verdict, its speaker, hide it or delete it) and the book's Scorecard, every report's Final tally, the reports in the app and any PDF printed afterwards all follow at once; public pages republish themselves about a minute later. PDFs already sent in Telegram stay as they were — ask for the PDF again.
 - Each report opens with the Kaipps Cafe logo, *Authored by Kaipp's AI Repo*, the copyright line and the disclaimer (built with several private and public AI models; educational material, not for sale, reuse or republication — including on YouTube — without explicit permission). The request it was written from is never printed in it.
 - A report can be published, as a web page and a PDF, at **https://kaippally.github.io/K-Ai-Repo/** (the public repository github.com/kaippally/K-Ai-Repo). Once it is public, **↗ Share** sends its link with a one-line description to any Telegram chat.
 

@@ -97,7 +97,7 @@ function CardEditor({ page, onCard, onPlay, hasVideo, videoId }: { page: PageEnt
         </Row>
       )}
       {page.kind === 'scorecard' && (
-        <div className="text-[11px] text-slate-500">The counts per speaker, made when the book was analysed. The page on air can also carry a live counter (Surface tab).</div>
+        <div className="text-[11px] text-slate-500">The counts per speaker, recounted from the visible cards whenever a card is changed, hidden or deleted — the reports' Final tally reads the same cards. The page on air can also carry a live counter (Surface tab).</div>
       )}
       {page.kind === 'claim' && (<>
         <Row label="Verdict">

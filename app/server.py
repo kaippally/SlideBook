@@ -676,6 +676,39 @@ async def reports_list(_):
     return ok(sorted(out, key=lambda x: -x['createdAt']))
 
 
+def _report_book(run, rec):
+    """The slide book a report's tally comes from: the book of the analysis it was written from, else the
+    newest analysed book of the same video. The tally is read from it live, so a correction made to the
+    book in SlideBook shows in the report — on screen, in a PDF printed afterwards and on the public site."""
+    base = db.get_run(run['base_run']) if run.get('base_run') else None
+    bid = base and base.get('book_id')
+    if not bid:
+        bid = next((x['book_id'] for x in db.list_runs(rec.get('vkey') or run['vkey'], 'analyse') if x.get('book_id')), None)
+    return db.get_book(bid) if bid else None
+
+
+def _report_tally(run, rec):
+    book = _report_book(run, rec)
+    if not book:
+        return None
+    names = rec.get('names') or {}
+    rows = analysis.scorecard_rows([p for p in book['manifest'] if not p.get('hidden')])
+    return [{**r, 'speaker': names.get(r['speaker'], r['speaker'])} for r in rows] or None
+
+
+@routes.get('/api/books/{id}/reports')
+async def book_reports(req):
+    """Every report whose tally is read from this book — what has to be republished after a correction."""
+    bid = req.match_info['id']
+    out = []
+    for rec in db.list_records():
+        for run in db.list_runs(rec['vkey'], 'report'):
+            b = _report_book(run, rec)
+            if b and b['id'] == bid:
+                out.append(run['id'])
+    return ok(out)
+
+
 @routes.get('/api/runs/{id}/report.html')
 async def run_report_html(req):
     import report_html
@@ -684,7 +717,8 @@ async def run_report_html(req):
         raise web.HTTPNotFound(text='no such report')
     rec = db.get_record(run['record_id'], full=False) or {}
     page = report_html.render(json.loads(run['result']), url=rec.get('url', ''), video_id=analysis.youtube_id(rec.get('url') or ''),
-                              made_at=run['created_at'], screen=req.query.get('screen') == '1')
+                              made_at=run['created_at'], screen=req.query.get('screen') == '1',
+                              tally=_report_tally(run, rec), language=(run.get('usage') or {}).get('language', ''))
     return web.Response(text=page, content_type='text/html', charset='utf-8', headers={'Cache-Control': 'no-store'})
 
 

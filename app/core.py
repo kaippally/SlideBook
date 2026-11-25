@@ -346,13 +346,23 @@ async def repin(book_id, old_manifest, new_manifest):
         await broadcast(snapshot({'event': 'repin'}))
 
 
+def _recount(manifest):
+    """The scorecard card counts what the book says NOW: every visible claim, fallacy, exchange and
+    contradiction per speaker. A card corrected, hidden or deleted changes the tally at once."""
+    rows = analysis.scorecard_rows([p for p in manifest if not p.get('hidden')])
+    return [{**p, 'card': {**(p.get('card') or {}), 'rows': rows}} if p.get('kind') == 'scorecard' else p for p in manifest]
+
+
 async def edit_manifest(book_id, fn):
     before = db.get_book(book_id)
     if not before:
         return None
-    after = db.mutate_manifest(book_id, fn)
+    after = db.mutate_manifest(book_id, lambda m: _recount(fn(m)))
     await repin(book_id, before['manifest'], after['manifest'])
     await book_changed(book_id)
+    # Reports read their tally from this book; StudioMate's bot republishes any that are public.
+    import relay
+    await relay.post({'type': 'slidebook-book-corrected', 'bookId': book_id})
     return after
 
 
